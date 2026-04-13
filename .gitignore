@@ -1,0 +1,21 @@
+# Logs / debug
+*.log
+*.swp
+*~
+
+# Backup
+*.bak
+*.orig
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (qui pourrait contenir hostname/user réels)
+psm.local
+.env
+.env.local
