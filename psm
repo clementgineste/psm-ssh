@@ -237,17 +237,19 @@ connect() {
 
     info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"
 
-    # Vault password : optionnel si auth par clé SSH
+    # Vault password : inutile si auth par clé SSH (agent actif avec clés chargées)
     local vault_pass="" target_pass=""
     local resolved_target="${target_user}@${target_host}"
-    vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 1) || true
-    if [[ -n "$vault_pass" ]]; then
-        debug "Vault password récupéré — mode password"
-    elif ssh-add -l >/dev/null 2>&1; then
-        info "Pas de vault password — mode clé SSH (agent actif, clés chargées)"
+    if ssh-add -l >/dev/null 2>&1; then
+        info "Mode clé SSH (agent actif, clés chargées)"
     else
-        warn "Pas de vault password et ssh-agent sans clé chargée"
-        warn "Si le PSMP demande un vault password, la connexion échouera"
+        vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 1) || true
+        if [[ -n "$vault_pass" ]]; then
+            debug "Vault password récupéré — mode password"
+        else
+            warn "Pas de vault password et ssh-agent sans clé chargée"
+            warn "Si le PSMP demande un vault password, la connexion échouera"
+        fi
     fi
 
     # Target password : obligatoire
