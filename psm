@@ -227,12 +227,11 @@ connect() {
     debug "Résolution hostname : ssh -G $target_host"
     local ssh_g_stderr="/dev/null"
     [[ "${DEBUG:-0}" == 1 ]] && ssh_g_stderr="/dev/stderr"
-    resolved=$(ssh -G "$target_host" 2>"$ssh_g_stderr" | awk '/^hostname / {print $2}') || true
-    if [[ -n "$resolved" ]]; then
-        target_host="$resolved"
-    else
-        warn "ssh -G a échoué pour '$target_host' (vérifie ~/.ssh/config)"
+    if ! resolved=$(ssh -G "$target_host" 2>"$ssh_g_stderr" | awk '/^hostname / {print $2}'); then
+        err "ssh -G a échoué pour '$target_host' — vérifie ~/.ssh/config"
+        exit 2
     fi
+    [[ -n "$resolved" ]] && target_host="$resolved"
     # 2. /etc/hosts + DNS (timeout 2s pour éviter les blocages)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         debug "Résolution DNS : getent hosts $target_host (timeout 2s)"
