@@ -269,14 +269,21 @@ connect() {
     fi
 
     # Target password : obligatoire
-    # Essai nom original (app@srv-prod01) puis nom résolu (app@10.2.2.2)
-    debug "Fetch target password pour '$target'"
-    target_pass=$(fetch_password "$target" 1) || true
-    if [[ -z "$target_pass" && "$resolved_target" != "$target" ]]; then
-        debug "Lookup '$target' échoué, tentative '$resolved_target'"
-        target_pass=$(fetch_password "$resolved_target") || exit 3
-    elif [[ -z "$target_pass" ]]; then
-        fetch_password "$target"
+    # Si le hostname a été résolu (IP), essayer l'IP d'abord (plus probable dans KeePassXC)
+    # puis le nom original en fallback
+    local primary="$target" fallback="$resolved_target"
+    if [[ "$resolved_target" != "$target" ]]; then
+        primary="$resolved_target"
+        fallback="$target"
+    fi
+    debug "Fetch target password pour '$primary'"
+    target_pass=$(fetch_password "$primary" 1) || true
+    if [[ -z "$target_pass" && "$primary" != "$fallback" ]]; then
+        debug "Lookup '$primary' échoué, tentative '$fallback'"
+        target_pass=$(fetch_password "$fallback" 1) || true
+    fi
+    if [[ -z "$target_pass" ]]; then
+        fetch_password "$primary"
         exit 3
     fi
     debug "Target password OK"
