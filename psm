@@ -196,17 +196,26 @@ connect() {
 
     info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"
 
-    # Récupération des deux mots de passe
-    # Essai nom original (app@srv-prod01) puis nom résolu (app@10.2.2.2)
-    local vault_pass target_pass=""
+    # Vault password : optionnel si auth par clé SSH
+    local vault_pass="" target_pass=""
     local resolved_target="${target_user}@${target_host}"
-    vault_pass=$(fetch_password "$VAULT_PASS_ENTRY") || exit 3
+    vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 2>/dev/null) || true
+    if [[ -n "$vault_pass" ]]; then
+        debug "Vault password récupéré — mode password"
+    elif ssh-add -l >/dev/null 2>&1; then
+        info "Pas de vault password — mode clé SSH (agent actif, clés chargées)"
+    else
+        warn "Pas de vault password et ssh-agent sans clé chargée"
+        warn "Si le PSMP demande un vault password, la connexion échouera"
+    fi
+
+    # Target password : obligatoire
+    # Essai nom original (app@srv-prod01) puis nom résolu (app@10.2.2.2)
     target_pass=$(fetch_password "$target" 2>/dev/null) || true
     if [[ -z "$target_pass" && "$resolved_target" != "$target" ]]; then
         debug "Lookup '$target' échoué, tentative '$resolved_target'"
         target_pass=$(fetch_password "$resolved_target") || exit 3
     elif [[ -z "$target_pass" ]]; then
-        # Pas de résolution alternative, relance pour afficher l'erreur
         fetch_password "$target"
         exit 3
     fi
@@ -237,56 +246,63 @@ connect() {
         spawn -noecho ssh -p $port $SSH_OPTS $conn_str
 
         # ---------------------------------------------------------------------
-        # Étape 1 : Vault Password
+        # Étape 1 : Vault Password OU directement Target Password
+        # (si auth vault par clé SSH, le prompt vault n'apparaît pas)
         # ---------------------------------------------------------------------
         expect {
             -re {(?i)vault password\s*:\s*\$} {
+                # Mode password — vault prompt détecté
+                if {\$env(VAULT_PASS) eq ""} {
+                    send_user "\n${C_RED}[ERR]${C_RST}  Vault password demandé mais aucun disponible\n"
+                    send_user "${C_YLW}[WARN]${C_RST} Configure l'entrée '$VAULT_PASS_ENTRY' dans KeePassXC ou utilise une clé SSH\n"
+                    exit 10
+                }
                 log_user 1
                 send -- "\$env(VAULT_PASS)\r"
+
+                # Attendre le prompt target (ou erreur vault)
+                expect {
+                    -re {(?i)vault password\s*:\s*\$} {
+                        send_user "\n${C_RED}[ERR]${C_RST}  Authentification vault échouée (mauvais VaultPassword)\n"
+                        exit 20
+                    }
+                    -re {(?i)(otp|one-time password|mfa code)\s*:\s*\$} {
+                        send_user "\n${C_RED}[ERR]${C_RST}  MFA détecté — non supporté par ce script\n"
+                        exit 21
+                    }
+                    -re {(?i)permission denied} {
+                        send_user "\n${C_RED}[ERR]${C_RST}  Permission refusée après vault password\n"
+                        exit 22
+                    }
+                    -re {(?i)password\s*:\s*\$} {
+                        send -- "\$env(TARGET_PASS)\r"
+                    }
+                    timeout {
+                        send_user "\n${C_RED}[ERR]${C_RST}  Timeout en attendant le prompt target\n"
+                        exit 23
+                    }
+                    eof {
+                        send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée avant prompt target\n"
+                        exit 24
+                    }
+                }
+            }
+            -re {(?i)password\s*:\s*\$} {
+                # Mode clé SSH — vault auth transparente, c'est le prompt target
+                log_user 1
+                send -- "\$env(TARGET_PASS)\r"
             }
             -re {(?i)permission denied} {
-                send_user "\n${C_RED}[ERR]${C_RST}  Permission refusée avant prompt vault\n"
+                send_user "\n${C_RED}[ERR]${C_RST}  Permission refusée (clé SSH rejetée ?)\n"
                 exit 10
             }
             timeout {
-                send_user "\n${C_RED}[ERR]${C_RST}  Timeout en attendant 'Vault Password:'\n"
+                send_user "\n${C_RED}[ERR]${C_RST}  Timeout en attendant un prompt d'authentification\n"
                 exit 11
             }
             eof {
-                send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée avant prompt vault\n"
+                send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée avant authentification\n"
                 exit 12
-            }
-        }
-
-        # ---------------------------------------------------------------------
-        # Étape 2 : Target Password (ou erreur vault)
-        # ---------------------------------------------------------------------
-        expect {
-            # Re-prompt vault → mauvais vault password
-            -re {(?i)vault password\s*:\s*\$} {
-                send_user "\n${C_RED}[ERR]${C_RST}  Authentification vault échouée (mauvais VaultPassword)\n"
-                exit 20
-            }
-            # MFA non supporté
-            -re {(?i)(otp|one-time password|mfa code)\s*:\s*\$} {
-                send_user "\n${C_RED}[ERR]${C_RST}  MFA détecté — non supporté par ce script\n"
-                exit 21
-            }
-            -re {(?i)permission denied} {
-                send_user "\n${C_RED}[ERR]${C_RST}  Permission refusée après vault password\n"
-                exit 22
-            }
-            # Prompt target — différents formats possibles
-            -re {(?i)password\s*:\s*\$} {
-                send -- "\$env(TARGET_PASS)\r"
-            }
-            timeout {
-                send_user "\n${C_RED}[ERR]${C_RST}  Timeout en attendant le prompt target\n"
-                exit 23
-            }
-            eof {
-                send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée avant prompt target\n"
-                exit 24
             }
         }
 
