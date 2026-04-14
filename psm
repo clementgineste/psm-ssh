@@ -247,9 +247,10 @@ connect() {
     fi
     if [[ "$target_host" != "$original_host" ]]; then
         debug "Résolution : $original_host → $target_host"
+        info "Cible : $target_user @ $original_host → $target_host (via $PSMP_HOST:$port)"
+    else
+        info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"
     fi
-
-    info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"
 
     # Vault password : inutile si auth par clé SSH (agent actif avec clés chargées)
     local vault_pass="" target_pass=""
