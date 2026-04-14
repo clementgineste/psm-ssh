@@ -139,13 +139,15 @@ fetch_password() {
         fi
 
         # 3. Fallback interactif (pas de fichier GPG, ou GPG a échoué)
-        # NE PAS rediriger stderr : keepassxc-cli affiche le prompt master password
-        debug "Fallback keepassxc-cli interactif pour '$entry'"
-        if pass=$(keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry") \
-           && [[ -n "$pass" ]]; then
-            debug "Mot de passe récupéré via keepassxc-cli pour '$entry'"
-            printf '%s' "$pass"
-            return 0
+        # Sauté en mode quiet — pas de prompt interactif sur un appel silencieux
+        if (( ! quiet )); then
+            debug "Fallback keepassxc-cli interactif pour '$entry'"
+            if pass=$(keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry") \
+               && [[ -n "$pass" ]]; then
+                debug "Mot de passe récupéré via keepassxc-cli pour '$entry'"
+                printf '%s' "$pass"
+                return 0
+            fi
         fi
     fi
 
