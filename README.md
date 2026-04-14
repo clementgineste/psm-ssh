@@ -5,18 +5,23 @@ des credentials depuis KeePassXC.
 
 ## Pourquoi
 
-CyberArk PSMP intercepte les connexions SSH avec un double prompt :
+CyberArk PSMP intercepte les connexions SSH avec un ou deux prompts :
 
 ```
 ssh vaultuser@targetuser@targethost@psmphost
-  → Vault Password:    (CyberArk vault)
+  → Vault Password:    (CyberArk vault — absent si auth par clé SSH)
   → Password:          (compte cible)
 ```
 
 Le PSMP utilise `keyboard-interactive`, donc `sshpass` ne marche pas. Ce
-script utilise `expect` pour piloter l'auth, et tire les deux mots de passe
+script utilise `expect` pour piloter l'auth, et tire les mots de passe
 depuis KeePassXC via le **Secret Service API** — aucun secret en clair, aucun
 mot de passe sur la cmdline.
+
+**Deux modes d'auth vault** sont supportés :
+- **Clé SSH** (recommandé) : si l'agent SSH a des clés chargées, l'auth vault
+  est transparente. Seul le password target est nécessaire.
+- **Password** : le script récupère aussi le vault password depuis KeePassXC.
 
 ## Dépendances
 
@@ -45,11 +50,13 @@ sudo dnf install expect libsecret openssh-clients keepassxc
 
 ```
 PSM/
-├── VaultPassword              ← Title="VaultPassword",  Password=<vault pwd>
+├── VaultPassword              ← Title="VaultPassword",  Password=<vault pwd>  (optionnel si clé SSH)
 ├── admin@srv-prod01           ← Title="admin@srv-prod01", Password=<target pwd>
 ├── root@srv-prod02
 └── admin@switch-core01
 ```
+
+L'entrée `VaultPassword` est **optionnelle** si tu utilises l'auth vault par clé SSH.
 
 Le **Title** de l'entrée est ce que `secret-tool lookup Title "..."` cherche.
 La base doit être **déverrouillée** dans le GUI pendant l'usage du script.
@@ -57,7 +64,7 @@ La base doit être **déverrouillée** dans le GUI pendant l'usage du script.
 Vérification rapide :
 
 ```bash
-secret-tool lookup Title VaultPassword     # doit afficher le mot de passe
+secret-tool lookup Title admin@srv-prod01     # doit afficher le mot de passe target
 ```
 
 ## Installation
@@ -94,7 +101,6 @@ Variables supportées :
 | `VAULT_PASS_ENTRY` | `VaultPassword`       | Title de l'entrée vault password    |
 | `SSH_OPTS`         | (voir script)         | Options ssh                         |
 | `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) pour les prompts        |
-| `SESSION_TIMEOUT`  | `60`                  | (réservé)                           |
 
 ## Usage
 
@@ -121,12 +127,31 @@ le nom résolu (`app@10.2.2.2`). Les deux conventions de nommage fonctionnent.
 
 ## Flow
 
+### Mode clé SSH (vault auth transparente)
+
+```
+psm admin@srv-prod01
+  │
+  ├─ ssh-agent a des clés → vault password non requis
+  ├─ secret-tool lookup Title "admin@srv-prod01"   → TARGET_PASS (env)
+  │   (fallback: keepassxc-cli si Secret Service KO)
+  │
+  ├─ expect:
+  │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
+  │    [banner masqué, vault auth par clé SSH]
+  │    "Password:"       → envoie TARGET_PASS
+  │    interact
+  │
+  └─ shell interactif sur srv-prod01
+```
+
+### Mode password (vault + target)
+
 ```
 psm admin@srv-prod01
   │
   ├─ secret-tool lookup Title "VaultPassword"      → VAULT_PASS  (env)
   ├─ secret-tool lookup Title "admin@srv-prod01"   → TARGET_PASS (env)
-  │   (fallback: keepassxc-cli si Secret Service KO)
   │
   ├─ expect:
   │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
@@ -155,7 +180,10 @@ psm admin@srv-prod01
 | 0     | Session terminée normalement                  |
 | 2     | Erreur d'usage (args, options)                |
 | 3     | Récupération de mot de passe échouée          |
-| 10–12 | Échec avant le prompt vault                   |
+| 10    | Vault password requis mais non disponible     |
+| 11    | Timeout en attendant un prompt                |
+| 12    | Connexion fermée (eof)                        |
+| 13    | Permission refusée (clé SSH rejetée)          |
 | 20–24 | Échec entre vault et target (incl. MFA)       |
 | 30–32 | Échec après auth target                       |
 
@@ -166,7 +194,10 @@ psm admin@srv-prod01
 - Les regex de prompt (`vault password`, `password`) sont génériques. Si
   ton PSMP utilise des libellés exotiques, lance avec `-d` pour voir les
   échanges bruts et adapte les `expect` dans le script.
-- KeePassXC GUI doit rester ouvert et déverrouillé pendant l'usage.
+- KeePassXC GUI doit rester ouvert et déverrouillé pendant l'usage
+  (sauf en mode clé SSH pure où seul le target password est nécessaire).
+- La résolution hostname ne gère pas IPv6 explicitement (fonctionne mais
+  avec un lookup `getent` redondant).
 
 ## Licence
 

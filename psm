@@ -3,9 +3,9 @@
 #       depuis KeePassXC (Secret Service API, fallback keepassxc-cli).
 #
 # Flow : ssh vaultuser@targetuser@targethost@psmphost
-#        - Prompt "Vault Password:" → mot de passe vault CyberArk
-#        - Prompt "Password:"       → mot de passe target
-#        - Shell interactif sur le serveur cible
+#   Mode clé SSH : auth vault transparente (ssh-agent) → "Password:" target
+#   Mode password : "Vault Password:" → "Password:" target
+#   → Shell interactif sur le serveur cible
 
 set -euo pipefail
 
@@ -19,7 +19,6 @@ KDBX_GROUP="${KDBX_GROUP:-PSM}"
 VAULT_PASS_ENTRY="${VAULT_PASS_ENTRY:-VaultPassword}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR}"
 EXPECT_TIMEOUT="${EXPECT_TIMEOUT:-30}"
-SESSION_TIMEOUT="${SESSION_TIMEOUT:-60}"
 
 # =============================================================================
 # Couleurs (désactivées si stderr n'est pas un terminal)
@@ -70,7 +69,7 @@ Configuration courante:
 
 Variables d'environnement supportées:
   PSMP_HOST, VAULT_USER, KDBX_PATH, KDBX_GROUP,
-  VAULT_PASS_ENTRY, SSH_OPTS, EXPECT_TIMEOUT, SESSION_TIMEOUT
+  VAULT_PASS_ENTRY, SSH_OPTS, EXPECT_TIMEOUT
 EOF
 }
 
@@ -242,6 +241,12 @@ connect() {
         log_user $log_init
         set timeout $EXPECT_TIMEOUT
 
+        # Couleurs pour les messages (définies en Tcl pour éviter que les
+        # crochets ANSI ne déclenchent la command substitution Tcl)
+        set c_red "\033\[31m"
+        set c_ylw "\033\[33m"
+        set c_rst "\033\[0m"
+
         # Lancement de la connexion SSH vers le PSMP
         spawn -noecho ssh -p $port $SSH_OPTS $conn_str
 
@@ -253,8 +258,8 @@ connect() {
             -re {(?i)vault password\s*:\s*\$} {
                 # Mode password — vault prompt détecté
                 if {\$env(VAULT_PASS) eq ""} {
-                    send_user "\n${C_RED}[ERR]${C_RST}  Vault password demandé mais aucun disponible\n"
-                    send_user "${C_YLW}[WARN]${C_RST} Configure l'entrée '$VAULT_PASS_ENTRY' dans KeePassXC ou utilise une clé SSH\n"
+                    send_user "\n\${c_red}\[ERR\]\${c_rst} Vault password demandé mais aucun disponible\n"
+                    send_user "\${c_ylw}\[WARN\]\${c_rst} Configure l'entrée '$VAULT_PASS_ENTRY' dans KeePassXC ou utilise une clé SSH\n"
                     exit 10
                 }
                 log_user 1
@@ -263,26 +268,26 @@ connect() {
                 # Attendre le prompt target (ou erreur vault)
                 expect {
                     -re {(?i)vault password\s*:\s*\$} {
-                        send_user "\n${C_RED}[ERR]${C_RST}  Authentification vault échouée (mauvais VaultPassword)\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Authentification vault échouée (mauvais VaultPassword)\n"
                         exit 20
                     }
                     -re {(?i)(otp|one-time password|mfa code)\s*:\s*\$} {
-                        send_user "\n${C_RED}[ERR]${C_RST}  MFA détecté — non supporté par ce script\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} MFA détecté — non supporté par ce script\n"
                         exit 21
                     }
                     -re {(?i)permission denied} {
-                        send_user "\n${C_RED}[ERR]${C_RST}  Permission refusée après vault password\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Permission refusée après vault password\n"
                         exit 22
                     }
                     -re {(?i)password\s*:\s*\$} {
                         send -- "\$env(TARGET_PASS)\r"
                     }
                     timeout {
-                        send_user "\n${C_RED}[ERR]${C_RST}  Timeout en attendant le prompt target\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Timeout en attendant le prompt target\n"
                         exit 23
                     }
                     eof {
-                        send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée avant prompt target\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée avant prompt target\n"
                         exit 24
                     }
                 }
@@ -293,15 +298,15 @@ connect() {
                 send -- "\$env(TARGET_PASS)\r"
             }
             -re {(?i)permission denied} {
-                send_user "\n${C_RED}[ERR]${C_RST}  Permission refusée (clé SSH rejetée ?)\n"
-                exit 10
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Permission refusée (clé SSH rejetée ?)\n"
+                exit 13
             }
             timeout {
-                send_user "\n${C_RED}[ERR]${C_RST}  Timeout en attendant un prompt d'authentification\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Timeout en attendant un prompt d'authentification\n"
                 exit 11
             }
             eof {
-                send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée avant authentification\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée avant authentification\n"
                 exit 12
             }
         }
@@ -311,11 +316,11 @@ connect() {
         # ---------------------------------------------------------------------
         expect {
             -re {(?i)permission denied} {
-                send_user "\n${C_RED}[ERR]${C_RST}  Authentification target échouée\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Authentification target échouée\n"
                 exit 30
             }
             -re {(?i)password\s*:\s*\$} {
-                send_user "\n${C_RED}[ERR]${C_RST}  Re-prompt target → mauvais TARGET_PASS\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Re-prompt target → mauvais TARGET_PASS\n"
                 exit 31
             }
             timeout {
@@ -326,7 +331,7 @@ connect() {
                 # Prompt shell détecté
             }
             eof {
-                send_user "\n${C_RED}[ERR]${C_RST}  Connexion fermée après auth target\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée après auth target\n"
                 exit 32
             }
         }
