@@ -53,11 +53,13 @@ Options:
   -d          Debug mode (affiche tous les échanges expect)
   -l          Liste les targets disponibles dans KeePassXC
   -p PORT     Port SSH du PSMP (défaut: 22)
+  -s          Auto-sudo : envoie le target password sur prompt [sudo]
   -v VUSER    Override du vault user (défaut: \$VAULT_USER)
   -h          Affiche cette aide
 
 Exemples:
   psm admin@srv-prod01
+  psm -s admin@srv-prod01
   psm -d root@switch-core01
   psm -p 2222 admin@srv-prod01
   psm -l
@@ -395,7 +397,13 @@ connect() {
         # Bascule en mode interactif : l'utilisateur reprend le contrôle
         # Ctrl-C et autres signaux sont transmis au shell distant
         set timeout -1
-        interact
+        if {$AUTO_SUDO} {
+            interact -o -re {\[sudo\] [Pp]assword[^:]*:} {
+                send -- "\$env(TARGET_PASS)\r"
+            }
+        } else {
+            interact
+        }
 EXPECT_EOF
 
     expect -f "$expect_script" || rc=$?
@@ -413,12 +421,14 @@ EXPECT_EOF
 DEBUG=0
 PORT=22
 LIST_ONLY=0
+AUTO_SUDO=0
 
-while getopts ":dlp:v:h" opt; do
+while getopts ":dlp:sv:h" opt; do
     case "$opt" in
         d) DEBUG=1 ;;
         l) LIST_ONLY=1 ;;
         p) PORT="$OPTARG" ;;
+        s) AUTO_SUDO=1 ;;
         v) VAULT_USER="$OPTARG" ;;
         h) usage; exit 0 ;;
         \?) err "Option inconnue : -$OPTARG"; usage; exit 2 ;;
