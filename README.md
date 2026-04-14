@@ -107,6 +107,18 @@ psm -l                            # liste les targets dans KeePassXC
 psm -h                            # aide
 ```
 
+## Résolution hostname
+
+Le script résout automatiquement les hostnames avant de les passer au PSMP,
+dans cet ordre :
+
+1. **`~/.ssh/config`** — `Host srv-prod01` / `HostName 10.2.2.2`
+2. **`/etc/hosts` + DNS** — résolution système classique
+3. **Aucun match** — le hostname est passé tel quel au PSMP
+
+Le lookup KeePassXC essaie d'abord le nom original (`app@srv-prod01`), puis
+le nom résolu (`app@10.2.2.2`). Les deux conventions de nommage fonctionnent.
+
 ## Flow
 
 ```
