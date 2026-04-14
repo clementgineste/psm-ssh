@@ -250,8 +250,12 @@ connect() {
     # =========================================================================
     # Script expect — séquence d'auth keyboard-interactive
     # =========================================================================
+    # Script expect écrit dans un fichier temp pour garder stdin connecté
+    # au terminal (sinon interact reçoit eof immédiatement)
     local rc=0
-    expect <<EXPECT_EOF || rc=$?
+    local expect_script
+    expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
+    cat > "$expect_script" <<EXPECT_EOF
         # En debug, on voit tout ; sinon on masque le banner initial
         log_user $log_init
         exp_internal $exp_debug
@@ -355,6 +359,9 @@ connect() {
         set timeout -1
         interact
 EXPECT_EOF
+
+    expect -f "$expect_script" || rc=$?
+    rm -f "$expect_script"
 
     # Nettoyage immédiat des secrets en mémoire (exécuté même si expect échoue)
     unset VAULT_PASS TARGET_PASS
