@@ -139,8 +139,9 @@ fetch_password() {
         fi
 
         # 3. Fallback interactif (pas de fichier GPG, ou GPG a échoué)
+        # NE PAS rediriger stderr : keepassxc-cli affiche le prompt master password
         debug "Fallback keepassxc-cli interactif pour '$entry'"
-        if pass=$(keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry" 2>/dev/null) \
+        if pass=$(keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry") \
            && [[ -n "$pass" ]]; then
             debug "Mot de passe récupéré via keepassxc-cli pour '$entry'"
             printf '%s' "$pass"
@@ -223,16 +224,20 @@ connect() {
     local original_host="$target_host"
     local resolved
     # 1. ~/.ssh/config (Host → HostName, wildcards, Includes...)
+    debug "Résolution hostname : ssh -G $target_host"
     resolved=$(ssh -G "$target_host" 2>/dev/null | awk '/^hostname / {print $2}')
     [[ -n "$resolved" ]] && target_host="$resolved"
+    debug "ssh -G → $target_host"
     # 2. /etc/hosts + DNS (si encore un hostname, pas une IP)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        debug "Résolution DNS : getent hosts $target_host"
         local ip
         ip=$(getent hosts "$target_host" 2>/dev/null | awk '{print $1}')
         [[ -n "$ip" ]] && target_host="$ip"
+        debug "getent → ${ip:-aucune résolution}"
     fi
     if [[ "$target_host" != "$original_host" ]]; then
-        debug "Résolution : $original_host → $target_host"
+        debug "Résolution finale : $original_host → $target_host"
     fi
 
     info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"
@@ -240,9 +245,11 @@ connect() {
     # Vault password : inutile si auth par clé SSH (agent actif avec clés chargées)
     local vault_pass="" target_pass=""
     local resolved_target="${target_user}@${target_host}"
+    debug "Vérification ssh-agent"
     if ssh-add -l >/dev/null 2>&1; then
         info "Mode clé SSH (agent actif, clés chargées)"
     else
+        debug "Pas de clé SSH, fetch vault password"
         vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 1) || true
         if [[ -n "$vault_pass" ]]; then
             debug "Vault password récupéré — mode password"
@@ -254,6 +261,7 @@ connect() {
 
     # Target password : obligatoire
     # Essai nom original (app@srv-prod01) puis nom résolu (app@10.2.2.2)
+    debug "Fetch target password pour '$target'"
     target_pass=$(fetch_password "$target" 1) || true
     if [[ -z "$target_pass" && "$resolved_target" != "$target" ]]; then
         debug "Lookup '$target' échoué, tentative '$resolved_target'"
@@ -262,6 +270,7 @@ connect() {
         fetch_password "$target"
         exit 3
     fi
+    debug "Target password OK"
 
     # Construction de la string de connexion CyberArk (IP résolue pour le PSMP)
     local conn_str="${VAULT_USER}@${target_user}@${target_host}@${PSMP_HOST}"
