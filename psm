@@ -324,8 +324,11 @@ connect() {
         }
 
         # ---------------------------------------------------------------------
-        # Étape 3 : vérification d'auth target puis interact
+        # Étape 3 : vérif rapide d'erreur auth target puis interact
+        # Timeout court (3s) : juste assez pour détecter un rejet immédiat,
+        # puis on bascule en interactif sans bloquer l'utilisateur.
         # ---------------------------------------------------------------------
+        set timeout 3
         expect {
             -re {(?i)permission denied} {
                 send_user "\n\${c_red}\[ERR\]\${c_rst} Authentification target échouée\n"
@@ -335,20 +338,16 @@ connect() {
                 send_user "\n\${c_red}\[ERR\]\${c_rst} Re-prompt target → mauvais TARGET_PASS\n"
                 exit 31
             }
-            timeout {
-                # Timeout ici = silence après envoi → on suppose que le shell est prêt
-                # (certains serveurs n'affichent rien avant le prompt)
-            }
-            -re {[\$#>]\s*\$} {
-                # Prompt shell détecté
-            }
             eof {
                 send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée après auth target\n"
                 exit 32
             }
+            timeout {}
+            -re {.+} {}
         }
 
         # Bascule en mode interactif : l'utilisateur reprend le contrôle
+        # Ctrl-C et autres signaux sont transmis au shell distant
         set timeout -1
         interact
 EXPECT_EOF
