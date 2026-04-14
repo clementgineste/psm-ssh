@@ -79,21 +79,32 @@ EOF
 # =============================================================================
 check_deps() {
     local missing=()
-    command -v expect      >/dev/null 2>&1 || missing+=("expect")
-    command -v secret-tool >/dev/null 2>&1 || missing+=("secret-tool (paquet libsecret-tools)")
-    command -v ssh         >/dev/null 2>&1 || missing+=("ssh")
+    command -v expect >/dev/null 2>&1 || missing+=("expect")
+    command -v ssh    >/dev/null 2>&1 || missing+=("ssh")
 
     if (( ${#missing[@]} > 0 )); then
         err "Dépendances manquantes :"
         for m in "${missing[@]}"; do err "  - $m"; done
-        err "Installation Debian/Ubuntu : apt install expect libsecret-tools openssh-client"
-        err "Installation RHEL/Fedora   : dnf install expect libsecret openssh-clients"
+        err "Installation Debian/Ubuntu : apt install expect openssh-client"
+        err "Installation RHEL/Fedora   : dnf install expect openssh-clients"
         exit 2
     fi
 
-    if ! command -v keepassxc-cli >/dev/null 2>&1; then
-        debug "keepassxc-cli absent : fallback désactivé"
+    # Sources de credentials : au moins une requise
+    local has_secret_tool=0 has_keepassxc=0
+    command -v secret-tool   >/dev/null 2>&1 && has_secret_tool=1
+    command -v keepassxc-cli >/dev/null 2>&1 && has_keepassxc=1
+
+    if (( !has_secret_tool && !has_keepassxc )); then
+        err "Aucune source de credentials disponible"
+        err "Installe au moins un des outils suivants :"
+        err "  - secret-tool   (libsecret-tools) : KeePassXC GUI + Secret Service"
+        err "  - keepassxc-cli                    : ligne de commande + GPG"
+        exit 2
     fi
+
+    (( has_secret_tool )) || debug "secret-tool absent : mode Secret Service désactivé"
+    (( has_keepassxc ))   || debug "keepassxc-cli absent : mode CLI désactivé"
 }
 
 # =============================================================================
@@ -101,16 +112,18 @@ check_deps() {
 # =============================================================================
 fetch_password() {
     local entry="$1"
+    local quiet="${2:-0}"
     local pass=""
 
     # 1. Secret Service (KeePassXC GUI déverrouillé + intégration activée)
-    if pass=$(secret-tool lookup Title "$entry" 2>/dev/null) && [[ -n "$pass" ]]; then
-        debug "Mot de passe récupéré via secret-tool pour '$entry'"
-        printf '%s' "$pass"
-        return 0
+    if command -v secret-tool >/dev/null 2>&1; then
+        if pass=$(secret-tool lookup Title "$entry" 2>/dev/null) && [[ -n "$pass" ]]; then
+            debug "Mot de passe récupéré via secret-tool pour '$entry'"
+            printf '%s' "$pass"
+            return 0
+        fi
+        debug "secret-tool a échoué pour '$entry', tentative keepassxc-cli"
     fi
-
-    debug "secret-tool a échoué pour '$entry', tentative keepassxc-cli"
 
     # 2. keepassxc-cli avec master password déchiffré par GPG (gpg-agent cache la passphrase)
     if command -v keepassxc-cli >/dev/null 2>&1 && [[ -f "$KDBX_PATH" ]]; then
@@ -135,6 +148,11 @@ fetch_password() {
         fi
     fi
 
+    if (( quiet )); then
+        debug "Lookup silencieux échoué pour '$entry'"
+        return 1
+    fi
+
     err "Impossible de récupérer le mot de passe pour : $entry"
     err "Vérifie que :"
     err "  - KeePassXC est ouvert et déverrouillé (mode Secret Service)"
@@ -153,23 +171,35 @@ list_targets() {
     # On cherche celles ayant un attribut xdg:schema (toutes les entrées KeePassXC)
     # puis on filtre par format user@host
     local found=0
-    while IFS= read -r title; do
-        if [[ "$title" == *@* && "$title" != "$VAULT_PASS_ENTRY" ]]; then
-            printf '  %s\n' "$title"
-            found=1
-        fi
-    done < <(secret-tool search --all xdg:schema org.freedesktop.Secret.Generic 2>/dev/null | \
-             awk -F' = ' '/^attribute\.Title/ {print $2}' | sort -u)
+    if command -v secret-tool >/dev/null 2>&1; then
+        while IFS= read -r title; do
+            if [[ "$title" == *@* && "$title" != "$VAULT_PASS_ENTRY" ]]; then
+                printf '  %s\n' "$title"
+                found=1
+            fi
+        done < <(secret-tool search --all xdg:schema org.freedesktop.Secret.Generic 2>/dev/null | \
+                 awk -F' = ' '/^attribute\.Title/ {print $2}' | sort -u)
+    fi
     if (( found )); then
         return 0
     fi
 
-    # fallback keepassxc-cli
+    # fallback keepassxc-cli (GPG d'abord, puis interactif)
     if command -v keepassxc-cli >/dev/null 2>&1 && [[ -f "$KDBX_PATH" ]]; then
-        warn "secret-tool indisponible, fallback keepassxc-cli (master password requis)"
-        keepassxc-cli ls -q "$KDBX_PATH" "$KDBX_GROUP" 2>/dev/null | \
-            grep -v '^VaultPassword' | sed 's/^/  /'
-        return 0
+        local entries=""
+        if [[ -f "$GPG_MASTER_FILE" ]] && command -v gpg >/dev/null 2>&1; then
+            debug "Liste via keepassxc-cli + GPG"
+            entries=$(gpg -qd "$GPG_MASTER_FILE" 2>/dev/null \
+                      | keepassxc-cli ls -q "$KDBX_PATH" "$KDBX_GROUP" 2>/dev/null) || true
+        fi
+        if [[ -z "$entries" ]]; then
+            warn "Fallback keepassxc-cli interactif (master password requis)"
+            entries=$(keepassxc-cli ls -q "$KDBX_PATH" "$KDBX_GROUP" 2>/dev/null) || true
+        fi
+        if [[ -n "$entries" ]]; then
+            printf '%s\n' "$entries" | grep -v '^VaultPassword' | sed 's/^/  /'
+            return 0
+        fi
     fi
 
     err "Aucune source disponible pour lister les targets"
@@ -210,7 +240,7 @@ connect() {
     # Vault password : optionnel si auth par clé SSH
     local vault_pass="" target_pass=""
     local resolved_target="${target_user}@${target_host}"
-    vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 2>/dev/null) || true
+    vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 1) || true
     if [[ -n "$vault_pass" ]]; then
         debug "Vault password récupéré — mode password"
     elif ssh-add -l >/dev/null 2>&1; then
@@ -222,7 +252,7 @@ connect() {
 
     # Target password : obligatoire
     # Essai nom original (app@srv-prod01) puis nom résolu (app@10.2.2.2)
-    target_pass=$(fetch_password "$target" 2>/dev/null) || true
+    target_pass=$(fetch_password "$target" 1) || true
     if [[ -z "$target_pass" && "$resolved_target" != "$target" ]]; then
         debug "Lookup '$target' échoué, tentative '$resolved_target'"
         target_pass=$(fetch_password "$resolved_target") || exit 3
@@ -243,6 +273,7 @@ connect() {
     # Mode debug expect
     local log_init=0 exp_debug=0
     if [[ "${DEBUG:-0}" == 1 ]]; then
+        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
         log_init=1
         exp_debug=1
     fi
@@ -255,6 +286,11 @@ connect() {
     local rc=0
     local expect_script
     expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
+    # Heredoc NON quoté (<<EXPECT_EOF) : bash expand $var, Tcl reçoit les valeurs.
+    # Convention d'escaping :
+    #   $var        → expandé par bash   (config: $port, $SSH_OPTS, $conn_str, ...)
+    #   \$var       → littéral pour Tcl  ($env(...), ${c_red}, ...)
+    #   \[...\]     → littéral pour Tcl  (évite la command substitution sur les crochets)
     cat > "$expect_script" <<EXPECT_EOF
         # En debug, on voit tout ; sinon on masque le banner initial
         log_user $log_init
