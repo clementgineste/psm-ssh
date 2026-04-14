@@ -241,8 +241,11 @@ connect() {
     unset vault_pass target_pass
 
     # Mode debug expect
-    local log_init=0
-    [[ "${DEBUG:-0}" == 1 ]] && log_init=1
+    local log_init=0 exp_debug=0
+    if [[ "${DEBUG:-0}" == 1 ]]; then
+        log_init=1
+        exp_debug=1
+    fi
 
     # =========================================================================
     # Script expect — séquence d'auth keyboard-interactive
@@ -251,6 +254,7 @@ connect() {
     expect <<EXPECT_EOF || rc=$?
         # En debug, on voit tout ; sinon on masque le banner initial
         log_user $log_init
+        exp_internal $exp_debug
         set timeout $EXPECT_TIMEOUT
 
         # Couleurs pour les messages (définies en Tcl pour éviter que les
