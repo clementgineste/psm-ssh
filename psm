@@ -220,15 +220,26 @@ connect() {
         exit 2
     fi
 
-    # Résolution du hostname via ~/.ssh/config uniquement (local, instantané).
-    # Pas de résolution DNS : le PSMP a son propre DNS interne.
+    # Résolution du hostname : SSH config → DNS (timeout 2s) → tel quel
     local original_host="$target_host"
     local resolved
+    # 1. ~/.ssh/config (Host → HostName, instantané)
     debug "Résolution hostname : ssh -G $target_host"
     resolved=$(ssh -G "$target_host" 2>/dev/null | awk '/^hostname / {print $2}')
     [[ -n "$resolved" ]] && target_host="$resolved"
+    # 2. /etc/hosts + DNS (timeout 2s pour éviter les blocages)
+    if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        debug "Résolution DNS : getent hosts $target_host (timeout 2s)"
+        local ip
+        ip=$(timeout 2 getent hosts "$target_host" 2>/dev/null | awk '{print $1}') || true
+        if [[ -n "$ip" ]]; then
+            target_host="$ip"
+        else
+            debug "DNS non résolu, hostname passé tel quel"
+        fi
+    fi
     if [[ "$target_host" != "$original_host" ]]; then
-        debug "Résolution SSH config : $original_host → $target_host"
+        debug "Résolution : $original_host → $target_host"
     fi
 
     info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"

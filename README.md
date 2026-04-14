@@ -157,12 +157,15 @@ remplis avec le target password pendant la session interactive.
 Le script résout automatiquement les hostnames avant de les passer au PSMP,
 dans cet ordre :
 
-1. **`~/.ssh/config`** — `Host srv-prod01` / `HostName 10.2.2.2`
-2. **`/etc/hosts` + DNS** — résolution système classique
+1. **`~/.ssh/config`** — `Host srv-prod01` / `HostName 10.2.2.2` (instantané)
+2. **`/etc/hosts` + DNS** — résolution système avec timeout de 2s
 3. **Aucun match** — le hostname est passé tel quel au PSMP
 
 Le lookup KeePassXC essaie d'abord le nom original (`app@srv-prod01`), puis
 le nom résolu (`app@10.2.2.2`). Les deux conventions de nommage fonctionnent.
+
+Le timeout DNS court (2s) évite les blocages sur les hostnames non résolvables
+depuis le poste client — le PSMP a son propre DNS interne pour la résolution finale.
 
 ## Flow
 
@@ -262,8 +265,7 @@ psm admin@srv-prod01
   échanges bruts et adapte les `expect` dans le script.
 - L'auto-sudo ne matche que le format `[sudo] password for ...:`.
   Les prompts sudo custom ou les prompts `su` ne sont pas interceptés.
-- La résolution hostname ne gère pas IPv6 explicitement (fonctionne mais
-  avec un lookup `getent` redondant).
+- La résolution hostname ne gère pas IPv6 explicitement.
 
 ## Licence
 
