@@ -17,6 +17,7 @@ VAULT_USER="${VAULT_USER:-ton.vault.user}"
 KDBX_PATH="${KDBX_PATH:-$HOME/Passwords.kdbx}"
 KDBX_GROUP="${KDBX_GROUP:-PSM}"
 VAULT_PASS_ENTRY="${VAULT_PASS_ENTRY:-VaultPassword}"
+GPG_MASTER_FILE="${GPG_MASTER_FILE:-$HOME/.psm-master.gpg}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR}"
 EXPECT_TIMEOUT="${EXPECT_TIMEOUT:-30}"
 
@@ -111,9 +112,21 @@ fetch_password() {
 
     debug "secret-tool a échoué pour '$entry', tentative keepassxc-cli"
 
-    # 2. Fallback keepassxc-cli (demande master password interactivement)
+    # 2. keepassxc-cli avec master password déchiffré par GPG (gpg-agent cache la passphrase)
     if command -v keepassxc-cli >/dev/null 2>&1 && [[ -f "$KDBX_PATH" ]]; then
-        info "Fallback keepassxc-cli : master password requis pour $KDBX_PATH"
+        if [[ -f "$GPG_MASTER_FILE" ]] && command -v gpg >/dev/null 2>&1; then
+            debug "Déchiffrement du master password via GPG ($GPG_MASTER_FILE)"
+            if pass=$(gpg -qd "$GPG_MASTER_FILE" 2>/dev/null \
+                       | keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry" 2>/dev/null) \
+               && [[ -n "$pass" ]]; then
+                debug "Mot de passe récupéré via keepassxc-cli + GPG pour '$entry'"
+                printf '%s' "$pass"
+                return 0
+            fi
+        fi
+
+        # 3. Fallback interactif (pas de fichier GPG, ou GPG a échoué)
+        debug "Fallback keepassxc-cli interactif pour '$entry'"
         if pass=$(keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry" 2>/dev/null) \
            && [[ -n "$pass" ]]; then
             debug "Mot de passe récupéré via keepassxc-cli pour '$entry'"
@@ -124,10 +137,9 @@ fetch_password() {
 
     err "Impossible de récupérer le mot de passe pour : $entry"
     err "Vérifie que :"
-    err "  - KeePassXC est ouvert et déverrouillé"
-    err "  - L'intégration Secret Service est activée"
-    err "  - Le groupe '$KDBX_GROUP' est exposé"
-    err "  - L'entrée '$entry' existe avec le titre exact"
+    err "  - KeePassXC est ouvert et déverrouillé (mode Secret Service)"
+    err "  - Ou ~/.psm-master.gpg existe (mode keepassxc-cli + GPG)"
+    err "  - Le groupe '$KDBX_GROUP' contient l'entrée '$entry'"
     return 1
 }
 
