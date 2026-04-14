@@ -15,38 +15,82 @@ ssh vaultuser@targetuser@targethost@psmphost
 
 Le PSMP utilise `keyboard-interactive`, donc `sshpass` ne marche pas. Ce
 script utilise `expect` pour piloter l'auth, et tire les mots de passe
-depuis KeePassXC via le **Secret Service API** — aucun secret en clair, aucun
-mot de passe sur la cmdline.
+depuis KeePassXC — aucun secret en clair, aucun mot de passe sur la cmdline.
 
 **Deux modes d'auth vault** sont supportés :
 - **Clé SSH** (recommandé) : si l'agent SSH a des clés chargées, l'auth vault
   est transparente. Seul le password target est nécessaire.
 - **Password** : le script récupère aussi le vault password depuis KeePassXC.
 
+**Deux backends de credentials** sont supportés :
+- **Secret Service API** (`secret-tool`) : KeePassXC GUI déverrouillé avec
+  intégration Secret Service activée.
+- **keepassxc-cli + GPG** : master password chiffré par GPG, déchiffré via
+  `gpg-agent` (cache la passphrase). Pas besoin de GUI.
+
+Au moins un des deux backends doit être disponible.
+
 ## Dépendances
 
 | Paquet              | Rôle                                       | Obligatoire |
 |---------------------|--------------------------------------------|-------------|
 | `expect`            | Pilotage de l'auth keyboard-interactive    | oui         |
-| `libsecret-tools`   | `secret-tool` pour Secret Service API      | oui         |
 | `openssh-client`    | Client SSH                                  | oui         |
-| `keepassxc`         | Source des secrets + GUI                   | oui (GUI)   |
-| `keepassxc-cli`     | Fallback si Secret Service indisponible    | optionnel   |
+| `libsecret-tools`   | `secret-tool` pour Secret Service API      | un des deux |
+| `keepassxc-cli`     | Accès CLI à la base KeePassXC              | un des deux |
+| `gpg`               | Déchiffrement du master password           | pour mode GPG |
+| `keepassxc`         | GUI + Secret Service                       | pour mode GUI |
 
 ```bash
-# Debian/Ubuntu
-sudo apt install expect libsecret-tools openssh-client keepassxc
+# Debian/Ubuntu — mode GUI (Secret Service)
+sudo apt install expect openssh-client libsecret-tools keepassxc
 
-# RHEL/Fedora
-sudo dnf install expect libsecret openssh-clients keepassxc
+# Debian/Ubuntu — mode CLI (GPG)
+sudo apt install expect openssh-client keepassxc2 gnupg
+
+# RHEL/Fedora — mode GUI
+sudo dnf install expect openssh-clients libsecret keepassxc
+
+# RHEL/Fedora — mode CLI (GPG)
+sudo dnf install expect openssh-clients keepassxc gnupg2
 ```
 
-## Setup KeePassXC
+## Setup
+
+### Mode Secret Service (GUI)
 
 1. Ouvrir KeePassXC → **Settings → Secret Service Integration** → cocher *Enable*
 2. Dans la base, créer un groupe (par défaut `PSM/`)
 3. **Settings de la base → Secret Service Integration** → exposer le groupe `PSM`
-4. Créer les entrées :
+4. Créer les entrées (voir structure ci-dessous)
+
+La base doit être **déverrouillée** dans le GUI pendant l'usage du script.
+
+Vérification rapide :
+
+```bash
+secret-tool lookup Title admin@srv-prod01     # doit afficher le mot de passe target
+```
+
+### Mode GPG + keepassxc-cli (sans GUI)
+
+1. Créer la base KeePassXC et les entrées (voir structure ci-dessous)
+2. Chiffrer le master password de la base avec GPG :
+
+```bash
+echo -n "ton-master-password" | gpg --encrypt --recipient ton@email.com -o ~/.psm-master.gpg
+```
+
+3. Vérifier que `gpg-agent` fonctionne et cache la passphrase :
+
+```bash
+gpg -qd ~/.psm-master.gpg | keepassxc-cli show -qsa Password ~/Passwords.kdbx PSM/admin@srv-prod01
+```
+
+La première invocation demande la passphrase GPG. Les suivantes utilisent le
+cache `gpg-agent` (configurable via `~/.gnupg/gpg-agent.conf`).
+
+### Structure des entrées KeePassXC
 
 ```
 PSM/
@@ -57,15 +101,6 @@ PSM/
 ```
 
 L'entrée `VaultPassword` est **optionnelle** si tu utilises l'auth vault par clé SSH.
-
-Le **Title** de l'entrée est ce que `secret-tool lookup Title "..."` cherche.
-La base doit être **déverrouillée** dans le GUI pendant l'usage du script.
-
-Vérification rapide :
-
-```bash
-secret-tool lookup Title admin@srv-prod01     # doit afficher le mot de passe target
-```
 
 ## Installation
 
@@ -92,26 +127,32 @@ export VAULT_PASS_ENTRY="VaultPassword"
 
 Variables supportées :
 
-| Variable           | Défaut                | Description                         |
-|--------------------|-----------------------|-------------------------------------|
-| `PSMP_HOST`        | `psmp.example.com`    | Hostname du proxy PSMP              |
-| `VAULT_USER`       | `ton.vault.user`      | User CyberArk vault                 |
-| `KDBX_PATH`        | `~/Passwords.kdbx`    | Base KeePassXC (pour le fallback)   |
-| `KDBX_GROUP`       | `PSM`                 | Groupe contenant les entrées        |
-| `VAULT_PASS_ENTRY` | `VaultPassword`       | Title de l'entrée vault password    |
-| `SSH_OPTS`         | (voir script)         | Options ssh                         |
-| `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) pour les prompts        |
+| Variable           | Défaut                | Description                              |
+|--------------------|-----------------------|------------------------------------------|
+| `PSMP_HOST`        | `psmp.example.com`    | Hostname du proxy PSMP                   |
+| `VAULT_USER`       | `ton.vault.user`      | User CyberArk vault                      |
+| `KDBX_PATH`        | `~/Passwords.kdbx`    | Base KeePassXC                           |
+| `KDBX_GROUP`       | `PSM`                 | Groupe contenant les entrées             |
+| `VAULT_PASS_ENTRY` | `VaultPassword`       | Title de l'entrée vault password         |
+| `GPG_MASTER_FILE`  | `~/.psm-master.gpg`   | Master password KeePassXC chiffré en GPG |
+| `SSH_OPTS`         | (voir script)         | Options ssh                              |
+| `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) pour les prompts             |
 
 ## Usage
 
 ```bash
 psm admin@srv-prod01              # connexion standard
+psm -s admin@srv-prod01           # auto-sudo : remplir le prompt [sudo] automatiquement
 psm -d root@switch-core01         # debug : affiche tous les échanges expect
 psm -p 2222 admin@srv-prod01      # port SSH custom
 psm -v autre.user admin@host      # override du vault user
 psm -l                            # liste les targets dans KeePassXC
 psm -h                            # aide
 ```
+
+Le flag `-s` active l'injection automatique du target password quand un
+prompt `[sudo] password for ...:` est détecté dans la session interactive.
+Les flags se combinent : `psm -sd` pour debug + auto-sudo.
 
 ## Résolution hostname
 
@@ -127,14 +168,31 @@ le nom résolu (`app@10.2.2.2`). Les deux conventions de nommage fonctionnent.
 
 ## Flow
 
-### Mode clé SSH (vault auth transparente)
+### Mode clé SSH + GPG (sans GUI)
+
+```
+psm -s admin@srv-prod01
+  │
+  ├─ ssh-agent a des clés → vault password non requis
+  ├─ gpg -qd ~/.psm-master.gpg
+  │    → keepassxc-cli show ... "PSM/admin@srv-prod01" → TARGET_PASS (env)
+  │
+  ├─ expect:
+  │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
+  │    [banner masqué, vault auth par clé SSH]
+  │    "Password:"              → envoie TARGET_PASS
+  │    interact (-s: surveille les prompts [sudo])
+  │
+  └─ shell interactif sur srv-prod01
+```
+
+### Mode clé SSH + Secret Service (GUI)
 
 ```
 psm admin@srv-prod01
   │
   ├─ ssh-agent a des clés → vault password non requis
   ├─ secret-tool lookup Title "admin@srv-prod01"   → TARGET_PASS (env)
-  │   (fallback: keepassxc-cli si Secret Service KO)
   │
   ├─ expect:
   │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
@@ -150,8 +208,10 @@ psm admin@srv-prod01
 ```
 psm admin@srv-prod01
   │
-  ├─ secret-tool lookup Title "VaultPassword"      → VAULT_PASS  (env)
-  ├─ secret-tool lookup Title "admin@srv-prod01"   → TARGET_PASS (env)
+  ├─ ssh-agent sans clé → fetch vault password
+  ├─ fetch "VaultPassword"                         → VAULT_PASS  (env)
+  ├─ fetch "admin@srv-prod01"                      → TARGET_PASS (env)
+  │   (source: secret-tool → keepassxc-cli+GPG → keepassxc-cli interactif)
   │
   ├─ expect:
   │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
@@ -168,10 +228,18 @@ psm admin@srv-prod01
 - Les mots de passe transitent par variables d'environnement vers `expect`
   (`$env(VAULT_PASS)`, `$env(TARGET_PASS)`) — jamais sur la ligne de commande,
   donc invisibles dans `ps`, `/proc/*/cmdline`, et l'historique shell.
-- `unset` immédiat des variables après la fin d'`expect`.
-- Aucun mot de passe écrit sur disque.
-- Le binaire `secret-tool` parle au démon Secret Service via DBus, sans
+- `unset` immédiat des variables après la fin d'`expect`, y compris en cas
+  d'erreur (pattern `|| rc=$?`).
+- Aucun mot de passe écrit sur disque. Le fichier expect temporaire ne
+  contient que des références `$env(...)`, pas de valeurs.
+- En mode Secret Service, `secret-tool` parle au démon via DBus, sans
   jamais exposer la base KeePassXC.
+- En mode GPG, seul le master password chiffré est sur disque. Le
+  déchiffrement passe par `gpg-agent` (cache limité dans le temps).
+- **Mode debug (`-d`)** : un avertissement est affiché car `exp_internal`
+  expose les mots de passe en clair dans la sortie. Ne pas utiliser en prod.
+- **Auto-sudo (`-s`)** : le target password est envoyé automatiquement sur
+  les prompts `[sudo]`. N'activer que sur des sessions de confiance.
 
 ## Codes de sortie
 
@@ -194,8 +262,8 @@ psm admin@srv-prod01
 - Les regex de prompt (`vault password`, `password`) sont génériques. Si
   ton PSMP utilise des libellés exotiques, lance avec `-d` pour voir les
   échanges bruts et adapte les `expect` dans le script.
-- KeePassXC GUI doit rester ouvert et déverrouillé pendant l'usage
-  (sauf en mode clé SSH pure où seul le target password est nécessaire).
+- L'auto-sudo (`-s`) ne matche que le format `[sudo] password for ...:`.
+  Les prompts sudo custom ou les prompts `su` ne sont pas interceptés.
 - La résolution hostname ne gère pas IPv6 explicitement (fonctionne mais
   avec un lookup `getent` redondant).
 
