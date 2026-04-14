@@ -225,7 +225,9 @@ connect() {
     local resolved
     # 1. ~/.ssh/config (Host → HostName, instantané)
     debug "Résolution hostname : ssh -G $target_host"
-    resolved=$(ssh -G "$target_host" 2>/dev/null | awk '/^hostname / {print $2}')
+    local ssh_g_stderr="/dev/null"
+    [[ "${DEBUG:-0}" == 1 ]] && ssh_g_stderr="/dev/stderr"
+    resolved=$(ssh -G "$target_host" 2>"$ssh_g_stderr" | awk '/^hostname / {print $2}')
     [[ -n "$resolved" ]] && target_host="$resolved"
     # 2. /etc/hosts + DNS (timeout 2s pour éviter les blocages)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
