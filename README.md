@@ -142,7 +142,6 @@ Variables supportées :
 
 ```bash
 psm admin@srv-prod01              # connexion standard
-psm -s admin@srv-prod01           # auto-sudo : remplir le prompt [sudo] automatiquement
 psm -d root@switch-core01         # debug : affiche tous les échanges expect
 psm -p 2222 admin@srv-prod01      # port SSH custom
 psm -v autre.user admin@host      # override du vault user
@@ -150,9 +149,8 @@ psm -l                            # liste les targets dans KeePassXC
 psm -h                            # aide
 ```
 
-Le flag `-s` active l'injection automatique du target password quand un
-prompt `[sudo] password for ...:` est détecté dans la session interactive.
-Les flags se combinent : `psm -sd` pour debug + auto-sudo.
+**Auto-sudo** : les prompts `[sudo] password for ...:` sont automatiquement
+remplis avec le target password pendant la session interactive.
 
 ## Résolution hostname
 
@@ -171,7 +169,7 @@ le nom résolu (`app@10.2.2.2`). Les deux conventions de nommage fonctionnent.
 ### Mode clé SSH + GPG (sans GUI)
 
 ```
-psm -s admin@srv-prod01
+psm admin@srv-prod01
   │
   ├─ ssh-agent a des clés → vault password non requis
   ├─ gpg -qd ~/.psm-master.gpg
@@ -181,7 +179,7 @@ psm -s admin@srv-prod01
   │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
   │    [banner masqué, vault auth par clé SSH]
   │    "Password:"              → envoie TARGET_PASS
-  │    interact (-s: surveille les prompts [sudo])
+  │    interact (auto-sudo sur prompts [sudo])
   │
   └─ shell interactif sur srv-prod01
 ```
@@ -238,8 +236,8 @@ psm admin@srv-prod01
   déchiffrement passe par `gpg-agent` (cache limité dans le temps).
 - **Mode debug (`-d`)** : un avertissement est affiché car `exp_internal`
   expose les mots de passe en clair dans la sortie. Ne pas utiliser en prod.
-- **Auto-sudo (`-s`)** : le target password est envoyé automatiquement sur
-  les prompts `[sudo]`. N'activer que sur des sessions de confiance.
+- **Auto-sudo** : le target password est envoyé automatiquement sur
+  les prompts `[sudo]` pendant la session interactive.
 
 ## Codes de sortie
 
@@ -262,7 +260,7 @@ psm admin@srv-prod01
 - Les regex de prompt (`vault password`, `password`) sont génériques. Si
   ton PSMP utilise des libellés exotiques, lance avec `-d` pour voir les
   échanges bruts et adapte les `expect` dans le script.
-- L'auto-sudo (`-s`) ne matche que le format `[sudo] password for ...:`.
+- L'auto-sudo ne matche que le format `[sudo] password for ...:`.
   Les prompts sudo custom ou les prompts `su` ne sont pas interceptés.
 - La résolution hostname ne gère pas IPv6 explicitement (fonctionne mais
   avec un lookup `getent` redondant).
