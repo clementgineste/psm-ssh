@@ -163,11 +163,14 @@ fetch_password() {
             fi
         fi
 
-        # 3. Fallback interactif (pas de fichier GPG, ou GPG a échoué)
-        # Sauté en mode quiet — pas de prompt interactif sur un appel silencieux
-        if (( ! quiet )); then
+        # 3. Fallback interactif — uniquement si GPG n'est PAS configuré
+        # (si GPG_MASTER_FILE existe, on considère la base déchiffrable : un
+        # échec signifie "entrée introuvable", pas "base inaccessible" — donc
+        # pas besoin de re-prompter le master password interactivement)
+        # Retrait du flag -q qui supprimait le prompt master password.
+        if (( ! quiet )) && [[ ! -f "$GPG_MASTER_FILE" ]]; then
             debug "Fallback keepassxc-cli interactif pour '$entry'"
-            if pass=$(keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry") \
+            if pass=$(keepassxc-cli show -sa Password "$KDBX_PATH" "$KDBX_GROUP/$entry") \
                && [[ -n "$pass" ]]; then
                 debug "Mot de passe récupéré via keepassxc-cli pour '$entry'"
                 printf '%s' "$pass"
@@ -355,8 +358,12 @@ connect() {
     done
 
     if [[ -z "$target_pass" ]]; then
-        # Dernier appel non-quiet pour afficher les erreurs détaillées
-        fetch_password "${lookup_names[0]}"
+        err "Impossible de récupérer le target password pour '$target_user'"
+        err "Noms essayés dans KeePassXC (aucun trouvé) :"
+        for name in "${lookup_names[@]}"; do
+            err "  - $KDBX_GROUP/$name"
+        done
+        err "Crée une entrée avec un de ces Titles dans le groupe '$KDBX_GROUP'"
         exit 3
     fi
     debug "Target password OK (entrée KeePassXC : $found_name)"
