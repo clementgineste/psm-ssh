@@ -310,7 +310,7 @@ connect() {
         debug "Pas de clé SSH, fetch vault password"
         vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 1) || true
         if [[ -n "$vault_pass" ]]; then
-            debug "Vault password récupéré — mode password"
+            info "Mode password (vault password depuis KeePassXC)"
         else
             warn "Pas de vault password et ssh-agent sans clé chargée"
             warn "Si le PSMP demande un vault password, la connexion échouera"
@@ -346,27 +346,27 @@ connect() {
         fi
     fi
 
+    info "Recherche du password target dans KeePassXC..."
     local found_name=""
     for name in "${lookup_names[@]}"; do
-        debug "Fetch target password pour '$name'"
+        debug "Lookup '$name'"
         target_pass=$(fetch_password "$name" 1) || true
         if [[ -n "$target_pass" ]]; then
             found_name="$name"
             break
         fi
-        debug "Lookup '$name' échoué"
     done
 
     if [[ -z "$target_pass" ]]; then
-        err "Impossible de récupérer le target password pour '$target_user'"
-        err "Noms essayés dans KeePassXC (aucun trouvé) :"
+        err "Aucune entrée KeePassXC trouvée pour '$target_user'"
+        err "Noms essayés :"
         for name in "${lookup_names[@]}"; do
             err "  - $KDBX_GROUP/$name"
         done
         err "Crée une entrée avec un de ces Titles dans le groupe '$KDBX_GROUP'"
         exit 3
     fi
-    debug "Target password OK (entrée KeePassXC : $found_name)"
+    info "Password trouvé (entrée : $KDBX_GROUP/$found_name)"
 
     # Construction de la string de connexion CyberArk (IP résolue pour le PSMP)
     local conn_str="${VAULT_USER}@${target_user}@${target_host}@${PSMP_HOST}"
@@ -537,10 +537,8 @@ shift $((OPTIND - 1))
 
 # Détection de secrets résiduels (nettoyage raté d'une session précédente)
 if [[ -n "${VAULT_PASS:-}" || -n "${TARGET_PASS:-}" ]]; then
-    warn "VAULT_PASS et/ou TARGET_PASS déjà présentes dans l'environnement"
-    warn "Un nettoyage n'a pas été effectué lors d'une exécution précédente"
+    warn "Secrets résiduels détectés dans l'environnement (session précédente mal terminée) — purge"
     unset VAULT_PASS TARGET_PASS
-    warn "Variables purgées"
 fi
 
 check_deps
