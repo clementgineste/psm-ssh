@@ -270,24 +270,34 @@ connect() {
     fi
 
     # Target password : obligatoire
-    # Si le hostname a été résolu (IP), essayer l'IP d'abord (plus probable dans KeePassXC)
-    # puis le nom original en fallback
-    local primary="$target" fallback="$resolved_target"
+    # Ordre de lookup — spécifique avant générique :
+    #   1. user@ip       (si hostname résolu, entrée par IP dans KeePassXC)
+    #   2. user@hostname (entrée par nom)
+    #   3. user          (compte LDAP, même mot de passe sur tous les serveurs)
+    local lookup_names=()
     if [[ "$resolved_target" != "$target" ]]; then
-        primary="$resolved_target"
-        fallback="$target"
+        lookup_names=("$resolved_target" "$target" "$target_user")
+    else
+        lookup_names=("$target" "$target_user")
     fi
-    debug "Fetch target password pour '$primary'"
-    target_pass=$(fetch_password "$primary" 1) || true
-    if [[ -z "$target_pass" && "$primary" != "$fallback" ]]; then
-        debug "Lookup '$primary' échoué, tentative '$fallback'"
-        target_pass=$(fetch_password "$fallback" 1) || true
-    fi
+
+    local found_name=""
+    for name in "${lookup_names[@]}"; do
+        debug "Fetch target password pour '$name'"
+        target_pass=$(fetch_password "$name" 1) || true
+        if [[ -n "$target_pass" ]]; then
+            found_name="$name"
+            break
+        fi
+        debug "Lookup '$name' échoué"
+    done
+
     if [[ -z "$target_pass" ]]; then
-        fetch_password "$primary"
+        # Dernier appel non-quiet pour afficher les erreurs détaillées
+        fetch_password "${lookup_names[0]}"
         exit 3
     fi
-    debug "Target password OK"
+    debug "Target password OK (entrée KeePassXC : $found_name)"
 
     # Construction de la string de connexion CyberArk (IP résolue pour le PSMP)
     local conn_str="${VAULT_USER}@${target_user}@${target_host}@${PSMP_HOST}"

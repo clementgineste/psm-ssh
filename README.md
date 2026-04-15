@@ -95,12 +95,22 @@ cache `gpg-agent` (configurable via `~/.gnupg/gpg-agent.conf`).
 ```
 PSM/
 ├── VaultPassword              ← Title="VaultPassword",  Password=<vault pwd>  (optionnel si clé SSH)
-├── admin@srv-prod01           ← Title="admin@srv-prod01", Password=<target pwd>
+├── admin@srv-prod01           ← Title="admin@srv-prod01", compte de service spécifique
+├── admin@10.2.2.3             ← Title="admin@10.2.2.3",    compte de service par IP
 ├── root@srv-prod02
-└── admin@switch-core01
+└── john.doe                  ← Title="john.doe",         compte LDAP, même mot de passe partout
 ```
 
 L'entrée `VaultPassword` est **optionnelle** si tu utilises l'auth vault par clé SSH.
+
+**Convention de lookup** (spécifique avant générique) :
+1. `user@ip` — si le hostname a été résolu en IP
+2. `user@hostname` — nom original
+3. `user` — compte LDAP/AD partagé entre plusieurs serveurs
+
+Le premier match gagne. Pour les comptes LDAP où le même mot de passe marche sur
+tous les serveurs, crée une seule entrée nommée par l'user (`john.doe`) — pas
+besoin de la dupliquer pour chaque host.
 
 ## Installation
 
