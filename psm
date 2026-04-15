@@ -18,6 +18,7 @@ KDBX_PATH="${KDBX_PATH:-$HOME/Passwords.kdbx}"
 KDBX_GROUP="${KDBX_GROUP:-PSM}"
 VAULT_PASS_ENTRY="${VAULT_PASS_ENTRY:-VaultPassword}"
 GPG_MASTER_FILE="${GPG_MASTER_FILE:-$HOME/.psm-master.gpg}"
+LDAP_USER="${LDAP_USER:-}"  # liste de users LDAP/AD (séparés par espaces), ex: "john.doe jane.smith"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR}"
 EXPECT_TIMEOUT="${EXPECT_TIMEOUT:-30}"
 
@@ -67,10 +68,12 @@ Configuration courante:
   VAULT_USER         = $VAULT_USER
   KDBX_GROUP         = $KDBX_GROUP
   VAULT_PASS_ENTRY   = $VAULT_PASS_ENTRY
+  LDAP_USER          = ${LDAP_USER:-<non défini>}
 
 Variables d'environnement supportées:
   PSMP_HOST, VAULT_USER, KDBX_PATH, KDBX_GROUP,
-  VAULT_PASS_ENTRY, SSH_OPTS, EXPECT_TIMEOUT
+  VAULT_PASS_ENTRY, GPG_MASTER_FILE, LDAP_USER,
+  SSH_OPTS, EXPECT_TIMEOUT
 EOF
 }
 
@@ -270,15 +273,32 @@ connect() {
     fi
 
     # Target password : obligatoire
-    # Ordre de lookup — spécifique avant générique :
-    #   1. user@ip       (si hostname résolu, entrée par IP dans KeePassXC)
-    #   2. user@hostname (entrée par nom)
-    #   3. user          (compte LDAP, même mot de passe sur tous les serveurs)
+    # Ordre de lookup — dépend de si target_user est un compte LDAP connu (LDAP_USER)
+    #   LDAP connu     : user → user@ip → user@hostname  (entrée unique, même passwd partout)
+    #   Compte service : user@ip → user@hostname → user  (spécifique avant générique)
+    local is_ldap=0 u
+    for u in $LDAP_USER; do
+        if [[ "$target_user" == "$u" ]]; then
+            is_ldap=1
+            break
+        fi
+    done
+
     local lookup_names=()
-    if [[ "$resolved_target" != "$target" ]]; then
-        lookup_names=("$resolved_target" "$target" "$target_user")
+    if (( is_ldap )); then
+        debug "User '$target_user' identifié comme compte LDAP (via LDAP_USER)"
+        lookup_names=("$target_user")
+        if [[ "$resolved_target" != "$target" ]]; then
+            lookup_names+=("$resolved_target" "$target")
+        else
+            lookup_names+=("$target")
+        fi
     else
-        lookup_names=("$target" "$target_user")
+        if [[ "$resolved_target" != "$target" ]]; then
+            lookup_names=("$resolved_target" "$target" "$target_user")
+        else
+            lookup_names=("$target" "$target_user")
+        fi
     fi
 
     local found_name=""

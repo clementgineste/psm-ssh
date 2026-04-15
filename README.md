@@ -103,14 +103,22 @@ PSM/
 
 L'entrée `VaultPassword` est **optionnelle** si tu utilises l'auth vault par clé SSH.
 
-**Convention de lookup** (spécifique avant générique) :
+**Convention de lookup** — l'ordre dépend de si le user est déclaré dans `LDAP_USER` :
+
+**Compte de service** (user **pas** dans `LDAP_USER`) — spécifique avant générique :
 1. `user@ip` — si le hostname a été résolu en IP
 2. `user@hostname` — nom original
-3. `user` — compte LDAP/AD partagé entre plusieurs serveurs
+3. `user` — fallback
+
+**Compte LDAP/AD** (user dans `LDAP_USER`) — générique avant spécifique :
+1. `user` — entrée unique partagée entre tous les serveurs
+2. `user@ip` — fallback
+3. `user@hostname` — fallback
 
 Le premier match gagne. Pour les comptes LDAP où le même mot de passe marche sur
-tous les serveurs, crée une seule entrée nommée par l'user (`john.doe`) — pas
-besoin de la dupliquer pour chaque host.
+tous les serveurs, crée une seule entrée nommée par l'user (`john.doe`) et
+déclare-le dans `LDAP_USER` — une seule recherche KeePassXC suffit à chaque
+connexion.
 
 ## Installation
 
@@ -133,6 +141,7 @@ export PSMP_HOST="psmp.mon-entreprise.com"
 export VAULT_USER="prenom.nom"
 export KDBX_GROUP="PSM"
 export VAULT_PASS_ENTRY="VaultPassword"
+export LDAP_USER="john.doe"   # ou plusieurs séparés par des espaces
 ```
 
 Variables supportées :
@@ -145,6 +154,7 @@ Variables supportées :
 | `KDBX_GROUP`       | `PSM`                 | Groupe contenant les entrées             |
 | `VAULT_PASS_ENTRY` | `VaultPassword`       | Title de l'entrée vault password         |
 | `GPG_MASTER_FILE`  | `~/.psm-master.gpg`   | Master password KeePassXC chiffré en GPG |
+| `LDAP_USER`        | (vide)                | Liste d'users LDAP/AD (séparés par espaces) |
 | `SSH_OPTS`         | (voir script)         | Options ssh                              |
 | `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) pour les prompts             |
 
