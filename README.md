@@ -128,15 +128,21 @@ cd psm-ssh
 chmod +x psm
 sudo install -m 755 psm /usr/local/bin/psm
 
-# Activer le hook pre-commit (bloque les infos internes avant de commit)
+# Activer les hooks git (pre-commit + commit-msg)
 git config core.hooksPath .githooks
 cp .githooks/patterns.example .githooks/patterns.local
 $EDITOR .githooks/patterns.local   # Ajouter tes patterns internes (hostnames, IPs, user IDs)
 ```
 
+Deux hooks sont fournis dans `.githooks/` :
+- **`pre-commit`** : bloque les commits contenant des strings internes (patterns
+  définis dans `patterns.local`, gitignoré).
+- **`commit-msg`** : impose le format [Conventional Commits](https://www.conventionalcommits.org/)
+  (`feat:`, `fix:`, `docs:`, etc.).
+
 Le fichier `patterns.local` est gitignoré — il contient tes patterns sensibles
 (domaines internes, formats d'identifiants, etc.) et ne doit jamais être committé.
-Le hook est inopérant tant que ce fichier n'existe pas.
+Le hook `pre-commit` est inopérant tant que ce fichier n'existe pas.
 
 Ou simplement ajouter le repo au `PATH`.
 

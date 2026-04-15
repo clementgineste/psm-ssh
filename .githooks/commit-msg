@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Commit-msg hook : impose le format Conventional Commits.
+#
+# Format attendu : <type>(<scope>): <description>
+#   type     : feat | fix | docs | style | refactor | perf | test | chore | build | ci | revert
+#   scope    : optionnel, entre parenthèses (ex: auth, config, expect)
+#   ! après scope/type pour marquer un breaking change (ex: feat!: drop -s flag)
+#
+# Spec complète : https://www.conventionalcommits.org/
+
+set -eu
+
+msg_file="$1"
+first_line=$(head -1 "$msg_file")
+
+# Laisse passer les commits techniques générés par Git (merge, revert, rebase interactif)
+if [[ "$first_line" =~ ^(Merge|Revert|fixup!|squash!|amend!) ]]; then
+    exit 0
+fi
+
+# Regex Conventional Commits (type obligatoire, scope et ! optionnels)
+pattern='^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\([a-z0-9_-]+\))?!?: .+'
+
+if ! [[ "$first_line" =~ $pattern ]]; then
+    cat >&2 <<EOF
+Message de commit non conforme au standard Conventional Commits.
+
+Format attendu : <type>(<scope>): <description>
+
+Types valides :
+  feat      nouvelle fonctionnalite
+  fix       bug fix
+  docs      documentation uniquement
+  style     formatting, whitespace (pas de changement de logique)
+  refactor  ni bug fix ni feature
+  perf      amelioration perf
+  test      ajout/modif tests
+  chore     maintenance (deps, tooling)
+  build     systeme de build
+  ci        configuration CI
+  revert    revert d'un commit
+
+Exemples :
+  feat: add LDAP user fallback
+  fix(auth): prevent silent exit on ssh -G failure
+  docs(readme): document config file precedence
+  refactor(fetch): extract quiet flag from stderr redirect
+  feat!: drop -s flag, auto-sudo is now default
+
+Ton message etait :
+  $first_line
+
+Bypass (exceptionnel) : git commit --no-verify
+EOF
+    exit 1
+fi
+
+# Warning longueur première ligne (recommandation : 72 chars pour un bon rendu)
+if (( ${#first_line} > 72 )); then
+    echo "Warning : premiere ligne longue (${#first_line} chars > 72 recommandes)" >&2
+    echo "          Prefere un resume court + details dans le body du commit" >&2
+fi
+
+exit 0
