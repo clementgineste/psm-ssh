@@ -213,13 +213,26 @@ Variables supportées :
 ## Usage
 
 ```bash
-psm admin@srv-prod01              # connexion standard
+psm admin@srv-prod01              # syntaxe user@host explicite
+psm srv-prod01                    # user extrait de ~/.ssh/config
 psm -d root@switch-core01         # debug : affiche tous les échanges expect
 psm -p 2222 admin@srv-prod01      # port SSH custom
 psm -v autre.user admin@host      # override du vault user
 psm -l                            # liste les targets dans KeePassXC
 psm -h                            # aide
 ```
+
+**Syntaxe `host` seul (sans user)** : si tu as configuré le user pour ce host
+dans `~/.ssh/config`, tu peux omettre la partie `user@`. Exemple :
+
+```
+# ~/.ssh/config
+Host srv-prod01
+    HostName 10.2.2.2
+    User admin
+```
+
+→ `psm srv-prod01` est équivalent à `psm admin@10.2.2.2`.
 
 **Auto-sudo** : les prompts `[sudo] password for ...:` sont automatiquement
 remplis avec le target password pendant la session interactive.
