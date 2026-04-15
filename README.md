@@ -122,6 +122,11 @@ connexion.
 
 ## Installation
 
+Pour **WSL2** (setup complet avec ssh-agent, gpg-agent, KeePassXC CLI),
+voir [`docs/WSL2-SETUP.md`](docs/WSL2-SETUP.md) — guide pas-à-pas.
+
+Pour les autres environnements :
+
 ```bash
 git clone https://github.com/clementgineste/psm-ssh.git
 cd psm-ssh
