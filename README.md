@@ -127,22 +127,63 @@ git clone https://github.com/clementgineste/psm-ssh.git
 cd psm-ssh
 chmod +x psm
 sudo install -m 755 psm /usr/local/bin/psm
+
+# Activer le hook pre-commit (bloque les infos internes avant de commit)
+git config core.hooksPath .githooks
+cp .githooks/patterns.example .githooks/patterns.local
+$EDITOR .githooks/patterns.local   # Ajouter tes patterns internes (hostnames, IPs, user IDs)
 ```
+
+Le fichier `patterns.local` est gitignoré — il contient tes patterns sensibles
+(domaines internes, formats d'identifiants, etc.) et ne doit jamais être committé.
+Le hook est inopérant tant que ce fichier n'existe pas.
 
 Ou simplement ajouter le repo au `PATH`.
 
 ## Configuration
 
-Éditer le bloc `CONFIG` en haut de `psm` ou utiliser des variables d'environnement
-(par exemple dans `~/.bashrc`) :
+Trois façons de configurer, par ordre de préférence :
+
+### 1. Fichier de config (recommandé — survit au `git pull`)
+
+Le script cherche automatiquement (dans l'ordre) :
+- `$PSM_CONFIG` si défini
+- `~/.config/psm/config`
+- `~/.psmrc`
+
+Un exemple est fourni dans le repo : [`config.example`](config.example).
+
+```bash
+mkdir -p ~/.config/psm
+cp config.example ~/.config/psm/config
+$EDITOR ~/.config/psm/config
+```
+
+Le fichier est sourcé comme du bash — syntaxe simple `VAR="valeur"`.
+
+### 2. Variables d'environnement (override ponctuel)
 
 ```bash
 export PSMP_HOST="psmp.mon-entreprise.com"
 export VAULT_USER="prenom.nom"
-export KDBX_GROUP="PSM"
-export VAULT_PASS_ENTRY="VaultPassword"
-export LDAP_USER="john.doe"   # ou plusieurs séparés par des espaces
+export LDAP_USER="john.doe"
 ```
+
+Ou one-shot : `VAULT_USER=autre.user psm admin@srv`.
+
+**Précédence** : par défaut le fichier de config surcharge l'environnement
+(`VAR="..."`). Pour que l'env garde la priorité sur certaines clés, utiliser
+le pattern conditionnel dans le fichier de config :
+
+```bash
+# ~/.config/psm/config
+: "${VAULT_USER:=prenom.nom}"   # env var VAULT_USER gagne si définie
+```
+
+### 3. Édition directe du script
+
+Le bloc `CONFIG` en haut de `psm` — à éviter, ça pète au prochain `git pull`.
+
 
 Variables supportées :
 

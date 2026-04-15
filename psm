@@ -10,8 +10,26 @@
 set -euo pipefail
 
 # =============================================================================
-# CONFIG (surchargeable via variables d'environnement)
+# CONFIG — le script cherche un fichier de config dans cet ordre :
+#   1. $PSM_CONFIG (si défini)
+#   2. ~/.config/psm/config
+#   3. ~/.psmrc
+# Le premier trouvé est sourcé. Si aucun, les défauts ci-dessous s'appliquent.
+#
+# Précédence (selon comment tu écris le fichier de config) :
+#   - `VAULT_USER="foo"`              → config surcharge l'environnement
+#   - `: "${VAULT_USER:=foo}"`        → environnement garde la priorité
 # =============================================================================
+PSM_CONFIG="${PSM_CONFIG:-}"
+for _candidate in "$PSM_CONFIG" "$HOME/.config/psm/config" "$HOME/.psmrc"; do
+    if [[ -n "$_candidate" && -f "$_candidate" ]]; then
+        # shellcheck source=/dev/null
+        source "$_candidate"
+        break
+    fi
+done
+unset _candidate
+
 PSMP_HOST="${PSMP_HOST:-psmp.example.com}"
 VAULT_USER="${VAULT_USER:-ton.vault.user}"
 KDBX_PATH="${KDBX_PATH:-$HOME/Passwords.kdbx}"

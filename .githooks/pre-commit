@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Pre-commit hook : bloque les commits contenant des patterns interdits.
+#
+# Les patterns sont chargés depuis un fichier LOCAL (gitignoré) :
+#   .githooks/patterns.local
+#
+# Cette liste contient des infos sensibles propres à ton environnement
+# (domaines internes, formats d'identifiants, hostnames, etc.) et ne doit
+# JAMAIS être committée.
+#
+# Installation :
+#   1. git config core.hooksPath .githooks
+#   2. cp .githooks/patterns.example .githooks/patterns.local
+#   3. Éditer patterns.local avec tes patterns réels
+
+set -eu
+
+HOOK_DIR="$(git rev-parse --show-toplevel)/.githooks"
+PATTERNS_FILE="$HOOK_DIR/patterns.local"
+
+if [[ ! -f "$PATTERNS_FILE" ]]; then
+    # Pas de patterns locaux définis — hook inopérant, on laisse passer
+    exit 0
+fi
+
+# Charge les patterns (une ligne par pattern, ignore commentaires et lignes vides)
+mapfile -t FORBIDDEN_PATTERNS < <(grep -vE '^\s*(#|$)' "$PATTERNS_FILE")
+[[ ${#FORBIDDEN_PATTERNS[@]} -eq 0 ]] && exit 0
+
+# Ne scanne que les fichiers staged, exclut .githooks/ lui-même
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^\.githooks/' || true)
+[[ -z "$staged" ]] && exit 0
+
+violation=0
+for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+    if matches=$(git diff --cached -U0 -- $staged | grep -iEnH "^\+.*$pattern" 2>/dev/null); then
+        if [[ -n "$matches" ]]; then
+            echo "Pattern interdit detecte : $pattern" >&2
+            echo "$matches" | head -5 >&2
+            echo "" >&2
+            violation=1
+        fi
+    fi
+done
+
+if (( violation )); then
+    echo "=======================================================================" >&2
+    echo "Commit bloque : patterns interdits detectes dans les changements staged." >&2
+    echo "Retire les valeurs ci-dessus ou remplace par des placeholders generiques." >&2
+    echo "" >&2
+    echo "Bypass (exceptionnel) : git commit --no-verify" >&2
+    echo "=======================================================================" >&2
+    exit 1
+fi
+
+exit 0

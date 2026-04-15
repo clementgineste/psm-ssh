@@ -1,0 +1,40 @@
+# Exemple de fichier de config psm
+#
+# Copier vers :
+#   ~/.config/psm/config   (priorité 1, XDG standard)
+#   ~/.psmrc               (priorité 2, dotfile classique)
+#
+# Ou pointer vers un chemin custom :
+#   export PSM_CONFIG=/chemin/vers/mon/config
+#
+# Le fichier est sourcé comme du bash, donc syntaxe bash standard.
+
+# -----------------------------------------------------------------------------
+# Infra CyberArk
+# -----------------------------------------------------------------------------
+PSMP_HOST="psmp.example.com"
+VAULT_USER="prenom.nom"
+
+# -----------------------------------------------------------------------------
+# KeePassXC
+# -----------------------------------------------------------------------------
+KDBX_PATH="$HOME/Passwords.kdbx"
+KDBX_GROUP="PSM"
+VAULT_PASS_ENTRY="VaultPassword"
+
+# Master password GPG-chiffré (mode CLI sans GUI)
+GPG_MASTER_FILE="$HOME/.psm-master.gpg"
+
+# -----------------------------------------------------------------------------
+# Comptes LDAP / AD — liste séparée par espaces
+# Les users listés ici ont une entrée KeePassXC nommée par user seul (pas
+# `user@host`). Le lookup essaie `user` en premier pour ces comptes, évitant
+# des allers-retours inutiles quand le même mot de passe marche partout.
+# -----------------------------------------------------------------------------
+LDAP_USER="ldap.user"
+
+# -----------------------------------------------------------------------------
+# SSH / expect
+# -----------------------------------------------------------------------------
+# SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
+# EXPECT_TIMEOUT="30"

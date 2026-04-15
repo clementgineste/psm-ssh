@@ -19,3 +19,6 @@ Thumbs.db
 psm.local
 .env
 .env.local
+
+# Patterns interdits pour le hook pre-commit (contient infos sensibles locales)
+.githooks/patterns.local
