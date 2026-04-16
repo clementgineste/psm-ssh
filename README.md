@@ -151,6 +151,22 @@ Le hook `pre-commit` est inopérant tant que ce fichier n'existe pas.
 
 Ou simplement ajouter le repo au `PATH`.
 
+### Autocomplétion bash
+
+```bash
+# Dans ~/.bashrc
+source ~/psm-ssh/completions/psm.bash
+```
+
+Complète les hostnames depuis `~/.ssh/config` :
+
+```
+$ psm srv<TAB><TAB>
+srv-prod01  srv-prod02  srv-staging
+$ psm admin@srv<TAB><TAB>
+admin@srv-prod01  admin@srv-prod02  admin@srv-staging
+```
+
 ## Configuration
 
 Trois façons de configurer, par ordre de préférence :
