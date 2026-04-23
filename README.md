@@ -211,6 +211,26 @@ le pattern conditionnel dans le fichier de config :
 
 Le bloc `CONFIG` en haut de `psm` — à éviter, ça pète au prochain `git pull`.
 
+### Override `PSMP_HOST` par host (via `~/.ssh/config`)
+
+Si une partie de ta flotte passe par un PSMP différent, tu peux surcharger
+`PSMP_HOST` par host (ou par pattern) avec la directive standard `SetEnv` :
+
+```sshconfig
+# Tous les hosts dont le nom commence par LC utilisent le PSMP "secure"
+Host LC*
+    SetEnv PSM_PSMP_HOST=psmp-secure.example.com
+
+# Un host spécifique
+Host srv-prod42
+    HostName 10.9.8.7
+    User admin
+    SetEnv PSM_PSMP_HOST=psmp-prod.example.com
+```
+
+Le script lit la valeur via `ssh -G` (comme il lit déjà `HostName` et `User`).
+L'override par ssh config gagne toujours sur la config psm et l'environnement.
+
 
 Variables supportées :
 

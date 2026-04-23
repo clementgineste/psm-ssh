@@ -96,6 +96,10 @@ Variables d'environnement supportées:
   PSMP_HOST, VAULT_USER, KDBX_PATH, KDBX_GROUP,
   VAULT_PASS_ENTRY, GPG_MASTER_FILE, LDAP_USER,
   SSH_OPTS, EXPECT_TIMEOUT
+
+Override PSMP par host (~/.ssh/config):
+  Host LC*
+      SetEnv PSM_PSMP_HOST=psmp-secure.example.com
 EOF
 }
 
@@ -280,6 +284,15 @@ connect() {
             exit 2
         fi
         debug "User extrait de ~/.ssh/config : $target_user"
+    fi
+
+    # Override PSMP_HOST si SetEnv PSM_PSMP_HOST=... défini dans ~/.ssh/config
+    # (ex: Host LC*  /  SetEnv PSM_PSMP_HOST=psmp-secure.example.com)
+    local host_psmp
+    host_psmp=$(awk '/^setenv PSM_PSMP_HOST=/ {sub(/^setenv PSM_PSMP_HOST=/,""); print; exit}' <<< "$ssh_g_output")
+    if [[ -n "$host_psmp" ]]; then
+        debug "PSMP_HOST overridé par ~/.ssh/config : $PSMP_HOST → $host_psmp"
+        PSMP_HOST="$host_psmp"
     fi
     # 2. /etc/hosts + DNS (timeout 2s pour éviter les blocages)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

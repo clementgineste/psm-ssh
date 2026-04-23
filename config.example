@@ -15,6 +15,9 @@
 PSMP_HOST="psmp.example.com"
 VAULT_USER="prenom.nom"
 
+# Override PSMP par host : voir README, section "Override PSMP_HOST par host".
+# Utilise `SetEnv PSM_PSMP_HOST=...` dans ~/.ssh/config (supporte Host LC*, etc.)
+
 # -----------------------------------------------------------------------------
 # KeePassXC
 # -----------------------------------------------------------------------------
