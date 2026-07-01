@@ -242,6 +242,39 @@ list_targets() {
 }
 
 # =============================================================================
+# Parsing des arguments de `psm cp` : identifie l'unique remote spec
+# (règle scp standard : un ':' avant tout '/', forme [user@]host:path).
+# Les flags (-x) et les chemins locaux sont ignorés pour la détection.
+# =============================================================================
+parse_scp_args() {
+    PSA_REMOTE_HOST=""
+    PSA_REMOTE_PATH=""
+    PSA_REMOTE_INDEX=-1
+    PSA_ARGV=("$@")
+    local i arg count=0
+    for i in "${!PSA_ARGV[@]}"; do
+        arg="${PSA_ARGV[$i]}"
+        [[ "$arg" == -* ]] && continue          # flag scp : jamais un remote spec
+        if [[ "$arg" =~ ^[^/]*: ]]; then         # ':' avant tout '/'
+            PSA_REMOTE_INDEX=$i
+            PSA_REMOTE_HOST="${arg%%:*}"
+            PSA_REMOTE_PATH="${arg#*:}"
+            (( count++ )) || true
+        fi
+    done
+
+    if (( count == 0 )); then
+        err "psm cp : aucune cible distante (attendu 'host:/chemin')"
+        return 2
+    fi
+    if (( count > 1 )); then
+        err "psm cp : transfert distant→distant non supporté (une seule cible 'host:/chemin')"
+        return 2
+    fi
+    return 0
+}
+
+# =============================================================================
 # Connexion SSH via expect
 # =============================================================================
 connect() {
