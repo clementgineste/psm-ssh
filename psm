@@ -63,7 +63,8 @@ debug() { [[ "${DEBUG:-0}" == 1 ]] && printf '%s[DBG]%s  %s\n' "$C_GRN" "$C_RST"
 # =============================================================================
 usage() {
     cat <<EOF
-Usage: psm [options] <targetuser@targethost|targethost>
+Usage: psm [options] <targetuser@targethost|targethost> [commande]
+       psm [options] cp [flags-scp] SRC... DST
 
 Connecte à un serveur cible via le proxy CyberArk PSMP.
 Récupère les mots de passe (vault + target) depuis KeePassXC.
@@ -84,6 +85,10 @@ Exemples:
   psm -d root@switch-core01
   psm -p 2222 admin@srv-prod01
   psm -l
+  psm srv-prod01 "systemctl status nginx"   # exécute une commande (non-interactif)
+  psm cp ./deploy.sh srv-prod01:/tmp/        # pousse un fichier (scp)
+  psm cp srv-prod01:/etc/hosts .             # récupère un fichier
+  psm cp -r ./dist srv-prod01:/var/www/      # transfert récursif
 
 Configuration courante:
   PSMP_HOST          = $PSMP_HOST

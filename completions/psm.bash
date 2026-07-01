@@ -21,18 +21,31 @@ _psm_complete() {
         return
     fi
 
+    # Sous-commande cp : compléter fichiers locaux + hostnames
+    if [[ "${COMP_WORDS[1]}" == "cp" && "$COMP_CWORD" -ge 2 ]]; then
+        local hosts_cp
+        hosts_cp=$(awk '/^[Hh]ost / && !/[*?]/ {for(i=2;i<=NF;i++) print $i}' \
+                   ~/.ssh/config 2>/dev/null)
+        if [[ "$cur" == *@* ]]; then
+            local prefix="${cur%@*}@" partial="${cur#*@}"
+            COMPREPLY=( $(compgen -P "$prefix" -W "$hosts_cp" -- "$partial") )
+        else
+            COMPREPLY=( $(compgen -f -W "$hosts_cp" -- "$cur") )
+        fi
+        return
+    fi
+
     # Hostnames depuis ~/.ssh/config (exclut les wildcards * ?)
     local hosts
     hosts=$(awk '/^[Hh]ost / && !/[*?]/ {for(i=2;i<=NF;i++) print $i}' \
             ~/.ssh/config 2>/dev/null)
 
-    # Si l'user a tapé user@<tab>, complète juste la partie host
     if [[ "$cur" == *@* ]]; then
         local prefix="${cur%@*}@"
         local partial="${cur#*@}"
         COMPREPLY=( $(compgen -P "$prefix" -W "$hosts" -- "$partial") )
     else
-        COMPREPLY=( $(compgen -W "$hosts" -- "$cur") )
+        COMPREPLY=( $(compgen -W "cp $hosts" -- "$cur") )
     fi
 }
 complete -F _psm_complete psm
