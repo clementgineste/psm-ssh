@@ -575,6 +575,54 @@ EXPECT_EOF
 }
 
 # =============================================================================
+# Queue expect commune aux modes non-interactifs (exec, scp) : affiche la
+# sortie du process spawné puis propage son code retour. Heredoc quoté
+# (<<'EXPECT_EOF') : uniquement du Tcl littéral, aucune expansion bash.
+# =============================================================================
+emit_noninteractive_tail() {
+    cat <<'EXPECT_EOF'
+
+        log_user 1
+        set timeout -1
+        expect eof
+        catch wait result
+        exit [lindex $result 3]
+EXPECT_EOF
+}
+
+# =============================================================================
+# Exécution non-interactive d'une commande distante (façon `ssh host "cmd"`).
+# La commande passe par $env(REMOTE_CMD) : un seul mot Tcl, transmis tel quel
+# au shell distant, sans substitution/backslash Tcl.
+# =============================================================================
+run_exec() {
+    local target="$1" port="$2" remote_cmd="$3"
+
+    resolve_target "$target" "$port"
+    export VAULT_PASS="$R_VAULT_PASS"
+    export TARGET_PASS="$R_TARGET_PASS"
+    export CONN_STR="$R_CONN_STR"
+    export REMOTE_CMD="$remote_cmd"
+    debug "Spawn: ssh -p $port $SSH_OPTS $R_CONN_STR <cmd>"
+    info "Exécution : $remote_cmd"
+
+    if [[ "${DEBUG:-0}" == 1 ]]; then
+        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
+    fi
+
+    local rc=0 expect_script
+    expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
+    local spawn_line="spawn -noecho ssh -p $port $SSH_OPTS \$env(CONN_STR) \$env(REMOTE_CMD)"
+
+    { emit_auth_preamble "$spawn_line"; emit_noninteractive_tail; } > "$expect_script"
+
+    expect -f "$expect_script" || rc=$?
+    rm -f "$expect_script"
+    unset VAULT_PASS TARGET_PASS CONN_STR REMOTE_CMD
+    return $rc
+}
+
+# =============================================================================
 # Point d'entrée
 # =============================================================================
 main() {
@@ -608,8 +656,8 @@ main() {
         exit $?
     fi
 
-    if (( $# != 1 )); then
-        err "Argument manquant : <targetuser@targethost>"
+    if (( $# < 1 )); then
+        err "Argument manquant : <targetuser@targethost> [commande]"
         usage
         exit 2
     fi
@@ -620,7 +668,12 @@ main() {
         exit 2
     fi
 
-    run_shell "$1" "$PORT"
+    local target="$1"; shift
+    if (( $# > 0 )); then
+        run_exec "$target" "$PORT" "$*"       # psm host "cmd..."
+    else
+        run_shell "$target" "$PORT"           # psm host  (shell interactif)
+    fi
 }
 
 # N'exécute main que si le script est lancé directement (pas sourcé par les tests)
