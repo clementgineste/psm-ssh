@@ -623,6 +623,39 @@ run_exec() {
 }
 
 # =============================================================================
+# Transfert de fichiers via scp à travers le PSMP.
+# Args = arguments bruts après `cp` (flags scp + chemins + un remote spec).
+# =============================================================================
+run_scp() {
+    parse_scp_args "$@" || exit $?
+
+    resolve_target "$PSA_REMOTE_HOST" "$PORT"
+    # Réécrit l'unique remote spec avec la conn_str CyberArk (IP résolue).
+    PSA_ARGV[$PSA_REMOTE_INDEX]="${R_CONN_STR}:${PSA_REMOTE_PATH}"
+
+    export VAULT_PASS="$R_VAULT_PASS"
+    export TARGET_PASS="$R_TARGET_PASS"
+    debug "Spawn: scp -P $PORT $SSH_OPTS ${PSA_ARGV[*]}"
+    info "Transfert scp via $R_PSMP_HOST"
+
+    if [[ "${DEBUG:-0}" == 1 ]]; then
+        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
+    fi
+
+    local rc=0 expect_script
+    expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
+    # {*}$argv : expansion Tcl des arguments scp (passés via -- ci-dessous).
+    local spawn_line="spawn -noecho scp -P $PORT $SSH_OPTS {*}\$argv"
+
+    { emit_auth_preamble "$spawn_line"; emit_noninteractive_tail; } > "$expect_script"
+
+    expect -f "$expect_script" -- "${PSA_ARGV[@]}" || rc=$?
+    rm -f "$expect_script"
+    unset VAULT_PASS TARGET_PASS
+    return $rc
+}
+
+# =============================================================================
 # Point d'entrée
 # =============================================================================
 main() {
@@ -666,6 +699,16 @@ main() {
     if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
         err "Port invalide : $PORT"
         exit 2
+    fi
+
+    if [[ "$1" == "cp" ]]; then
+        shift
+        if (( $# < 2 )); then
+            err "Usage : psm cp [flags] SRC... DST"
+            exit 2
+        fi
+        run_scp "$@"
+        exit $?
     fi
 
     local target="$1"; shift
