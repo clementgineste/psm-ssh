@@ -580,13 +580,31 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `resolve_target`, `emit_auth_preamble`, globals `DEBUG`, `SSH_OPTS`.
-- Produces: `run_exec "<target>" "<port>" "<remote_cmd>"` — exécute `remote_cmd` sur la cible via ssh non-interactif, propage le code retour de ssh. Routage : `psm [user@]host "cmd…"` (≥ 2 args positionnels).
+- Produces:
+  - `emit_noninteractive_tail` — écrit sur stdout la queue `expect` commune aux modes non-interactifs (affiche la sortie puis propage le code retour du process). Réutilisée par `run_scp` (Task 6).
+  - `run_exec "<target>" "<port>" "<remote_cmd>"` — exécute `remote_cmd` sur la cible via ssh non-interactif, propage le code retour de ssh. Routage : `psm [user@]host "cmd…"` (≥ 2 args positionnels).
 
 - [ ] **Step 1: Implémenter `run_exec`**
 
-Ajouter après `run_shell` :
+Ajouter après `run_shell` d'abord la queue non-interactive partagée (réutilisée par `run_scp` en Task 6), puis `run_exec` :
 
 ```bash
+# =============================================================================
+# Queue expect commune aux modes non-interactifs (exec, scp) : affiche la
+# sortie du process spawné puis propage son code retour. Heredoc quoté
+# (<<'EXPECT_EOF') : uniquement du Tcl littéral, aucune expansion bash.
+# =============================================================================
+emit_noninteractive_tail() {
+    cat <<'EXPECT_EOF'
+
+        log_user 1
+        set timeout -1
+        expect eof
+        catch wait result
+        exit [lindex $result 3]
+EXPECT_EOF
+}
+
 # =============================================================================
 # Exécution non-interactive d'une commande distante (façon `ssh host "cmd"`).
 # La commande passe par $env(REMOTE_CMD) : un seul mot Tcl, transmis tel quel
@@ -611,18 +629,7 @@ run_exec() {
     expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
     local spawn_line="spawn -noecho ssh -p $port $SSH_OPTS \$env(CONN_STR) \$env(REMOTE_CMD)"
 
-    {
-        emit_auth_preamble "$spawn_line"
-        cat <<'EXPECT_EOF'
-
-        # Non-interactif : laisse la commande produire sa sortie puis propage son code.
-        log_user 1
-        set timeout -1
-        expect eof
-        catch wait result
-        exit [lindex $result 3]
-EXPECT_EOF
-    } > "$expect_script"
+    { emit_auth_preamble "$spawn_line"; emit_noninteractive_tail; } > "$expect_script"
 
     expect -f "$expect_script" || rc=$?
     rm -f "$expect_script"
@@ -630,8 +637,6 @@ EXPECT_EOF
     return $rc
 }
 ```
-
-> La queue utilise un heredoc **quoté** (`<<'EXPECT_EOF'`) car elle ne contient que du Tcl littéral (`$result`, `[lindex ...]`) — aucune expansion bash souhaitée.
 
 - [ ] **Step 2: Ajouter le routage exec dans `main()`**
 
@@ -692,7 +697,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `psm` (nouvelle fonction `run_scp` + routage `cp` dans `main`)
 
 **Interfaces:**
-- Consumes: `parse_scp_args`, `resolve_target`, `emit_auth_preamble`, globals `DEBUG`, `SSH_OPTS`.
+- Consumes: `parse_scp_args`, `resolve_target`, `emit_auth_preamble`, `emit_noninteractive_tail`, globals `DEBUG`, `SSH_OPTS`.
 - Produces: `run_scp "$@"` (args = tout ce qui suit `cp`) — résout la cible, réécrit le remote spec, lance scp piloté par expect, propage le code retour de scp. Routage : `psm cp [flags] SRC… DST`.
 
 - [ ] **Step 1: Implémenter `run_scp`**
@@ -725,18 +730,7 @@ run_scp() {
     # {*}$argv : expansion Tcl des arguments scp (passés via -- ci-dessous).
     local spawn_line="spawn -noecho scp -P $PORT $SSH_OPTS {*}\$argv"
 
-    {
-        emit_auth_preamble "$spawn_line"
-        cat <<'EXPECT_EOF'
-
-        # Non-interactif : affiche la progression scp puis propage son code retour.
-        log_user 1
-        set timeout -1
-        expect eof
-        catch wait result
-        exit [lindex $result 3]
-EXPECT_EOF
-    } > "$expect_script"
+    { emit_auth_preamble "$spawn_line"; emit_noninteractive_tail; } > "$expect_script"
 
     expect -f "$expect_script" -- "${PSA_ARGV[@]}" || rc=$?
     rm -f "$expect_script"
