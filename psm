@@ -283,6 +283,9 @@ parse_scp_args() {
 # Résolution de la cible + fetch des credentials
 # =============================================================================
 resolve_target() {
+    # Single-shot par invocation : les globals R_* ne sont pas remis à zéro en
+    # entrée (seul R_PSMP_HOST est ré-initialisé). Ne pas appeler en boucle sans
+    # exit entre deux, sinon des valeurs R_* précédentes pourraient persister.
     local target="$1" port="$2"
     local target_user="" target_host=""
     R_PSMP_HOST="$PSMP_HOST"
@@ -452,6 +455,11 @@ emit_auth_preamble() {
         exp_debug=1
     fi
 
+    # Convention d'escaping (heredoc NON quoté <<EXPECT_EOF) :
+    #   $var   → expandé par bash   ($spawn_line, $EXPECT_TIMEOUT, $VAULT_PASS_ENTRY)
+    #   \$var  → littéral pour Tcl  ($env(CONN_STR/VAULT_PASS/TARGET_PASS), ${c_red})
+    #   \[..\] et \033 → littéral pour Tcl (évite command-substitution / expansion)
+    # Les secrets ne passent que par $env(...), jamais sur la ligne de commande.
     cat <<EXPECT_EOF
         log_user $log_init
         exp_internal $exp_debug
@@ -608,7 +616,7 @@ run_exec() {
     export TARGET_PASS="$R_TARGET_PASS"
     export CONN_STR="$R_CONN_STR"
     export REMOTE_CMD="$remote_cmd"
-    debug "Spawn: ssh -p $port $SSH_OPTS $R_CONN_STR <cmd>"
+    debug "Spawn: ssh -p $port $SSH_OPTS $R_CONN_STR $remote_cmd"
     info "Exécution : $remote_cmd"
 
     if [[ "${DEBUG:-0}" == 1 ]]; then
