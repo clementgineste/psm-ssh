@@ -275,11 +275,12 @@ parse_scp_args() {
 }
 
 # =============================================================================
-# Connexion SSH via expect
+# Résolution de la cible + fetch des credentials
 # =============================================================================
-connect() {
+resolve_target() {
     local target="$1" port="$2"
     local target_user="" target_host=""
+    R_PSMP_HOST="$PSMP_HOST"
 
     # Parse target : 'user@host' ou 'host' seul (user sera extrait de ~/.ssh/config)
     if [[ "$target" == *@* ]]; then
@@ -325,7 +326,7 @@ connect() {
     host_psmp=$(awk '/^setenv PSM_PSMP_HOST=/ {sub(/^setenv PSM_PSMP_HOST=/,""); print; exit}' <<< "$ssh_g_output")
     if [[ -n "$host_psmp" ]]; then
         debug "PSMP_HOST overridé par ~/.ssh/config : $PSMP_HOST → $host_psmp"
-        PSMP_HOST="$host_psmp"
+        R_PSMP_HOST="$host_psmp"
     fi
     # 2. /etc/hosts + DNS (timeout 2s pour éviter les blocages)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -340,9 +341,9 @@ connect() {
     fi
     if [[ "$target_host" != "$original_host" ]]; then
         debug "Résolution : $original_host → $target_host"
-        info "Cible : $target_user @ $original_host → $target_host (via $PSMP_HOST:$port)"
+        info "Cible : $target_user @ $original_host → $target_host (via $R_PSMP_HOST:$port)"
     else
-        info "Cible : $target_user @ $target_host (via $PSMP_HOST:$port)"
+        info "Cible : $target_user @ $target_host (via $R_PSMP_HOST:$port)"
     fi
 
     # Vault password : inutile si auth par clé SSH (agent actif avec clés chargées)
@@ -424,7 +425,26 @@ connect() {
     info "Password trouvé (entrée : $KDBX_GROUP/$found_name)"
 
     # Construction de la string de connexion CyberArk (IP résolue pour le PSMP)
-    local conn_str="${VAULT_USER}@${target_user}@${target_host}@${PSMP_HOST}"
+    R_TARGET_USER="$target_user"
+    R_TARGET_HOST="$target_host"
+    R_ORIGINAL_HOST="$original_host"
+    R_VAULT_PASS="$vault_pass"
+    R_TARGET_PASS="$target_pass"
+    R_CONN_STR="${VAULT_USER}@${target_user}@${target_host}@${R_PSMP_HOST}"
+    unset vault_pass target_pass
+}
+
+# =============================================================================
+# Connexion SSH via expect
+# =============================================================================
+connect() {
+    local target="$1" port="$2"
+
+    resolve_target "$target" "$port"
+
+    local conn_str="$R_CONN_STR"
+    local vault_pass="$R_VAULT_PASS"
+    local target_pass="$R_TARGET_PASS"
     debug "Spawn: ssh -p $port $SSH_OPTS $conn_str"
 
     # Export des passwords + conn_str vers expect via env.
