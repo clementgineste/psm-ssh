@@ -435,69 +435,29 @@ resolve_target() {
 }
 
 # =============================================================================
-# Connexion SSH via expect
+# Préambule expect commun aux 3 modes : auth vault (optionnelle) → target.
+# $1 = ligne `spawn` complète (syntaxe Tcl ; \$env(...) littéral).
+# Émet le script sur stdout.
 # =============================================================================
-connect() {
-    local target="$1" port="$2"
-
-    resolve_target "$target" "$port"
-
-    local conn_str="$R_CONN_STR"
-    local vault_pass="$R_VAULT_PASS"
-    local target_pass="$R_TARGET_PASS"
-    debug "Spawn: ssh -p $port $SSH_OPTS $conn_str"
-
-    # Export des passwords + conn_str vers expect via env.
-    # conn_str passe par env pour éviter la backslash substitution Tcl
-    # (ex: "DOMAIN\user" deviendrait "DOMAINuser" si injecté dans le
-    # script expect via heredoc — $env(...) est lu au runtime, sans parse).
-    export VAULT_PASS="$vault_pass"
-    export TARGET_PASS="$target_pass"
-    export CONN_STR="$conn_str"
-    unset vault_pass target_pass
-
-    # Mode debug expect
+emit_auth_preamble() {
+    local spawn_line="$1"
     local log_init=0 exp_debug=0
     if [[ "${DEBUG:-0}" == 1 ]]; then
-        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
         log_init=1
         exp_debug=1
     fi
 
-    # =========================================================================
-    # Script expect — séquence d'auth keyboard-interactive
-    # =========================================================================
-    # Script expect écrit dans un fichier temp pour garder stdin connecté
-    # au terminal (sinon interact reçoit eof immédiatement)
-    local rc=0
-    local expect_script
-    expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
-    # Heredoc NON quoté (<<EXPECT_EOF) : bash expand $var, Tcl reçoit les valeurs.
-    # Convention d'escaping :
-    #   $var        → expandé par bash   (config: $port, $SSH_OPTS, $conn_str, ...)
-    #   \$var       → littéral pour Tcl  ($env(...), ${c_red}, ...)
-    #   \[...\]     → littéral pour Tcl  (évite la command substitution sur les crochets)
-    cat > "$expect_script" <<EXPECT_EOF
-        # En debug, on voit tout ; sinon on masque le banner initial
+    cat <<EXPECT_EOF
         log_user $log_init
         exp_internal $exp_debug
         set timeout $EXPECT_TIMEOUT
 
-        # Couleurs pour les messages (définies en Tcl pour éviter que les
-        # crochets ANSI ne déclenchent la command substitution Tcl)
         set c_red "\033\[31m"
         set c_ylw "\033\[33m"
         set c_rst "\033\[0m"
 
-        # Lancement de la connexion SSH vers le PSMP
-        # conn_str via \$env(...) : évite la backslash substitution Tcl
-        # (préserve les users type "DOMAIN\user")
-        spawn -noecho ssh -p $port $SSH_OPTS \$env(CONN_STR)
+        $spawn_line
 
-        # ---------------------------------------------------------------------
-        # Étape 1 : Vault Password OU directement Target Password
-        # (si auth vault par clé SSH, le prompt vault n'apparaît pas)
-        # ---------------------------------------------------------------------
         expect {
             -re {(?i)enter passphrase for} {
                 send_user "\n\${c_red}\[ERR\]\${c_rst} Passphrase SSH demandée — clé non chargée dans l'agent\n"
@@ -505,7 +465,6 @@ connect() {
                 exit 14
             }
             -re {(?i)vault password\s*:\s*\$} {
-                # Mode password — vault prompt détecté
                 if {\$env(VAULT_PASS) eq ""} {
                     send_user "\n\${c_red}\[ERR\]\${c_rst} Vault password demandé mais aucun disponible\n"
                     send_user "\${c_ylw}\[WARN\]\${c_rst} Configure l'entrée '$VAULT_PASS_ENTRY' dans KeePassXC ou utilise une clé SSH\n"
@@ -514,7 +473,6 @@ connect() {
                 log_user 1
                 send -- "\$env(VAULT_PASS)\r"
 
-                # Attendre le prompt target (ou erreur vault)
                 expect {
                     -re {(?i)vault password\s*:\s*\$} {
                         send_user "\n\${c_red}\[ERR\]\${c_rst} Authentification vault échouée (mauvais VaultPassword)\n"
@@ -542,7 +500,6 @@ connect() {
                 }
             }
             -re {(?i)password\s*:\s*\$} {
-                # Mode clé SSH — vault auth transparente, c'est le prompt target
                 log_user 1
                 send -- "\$env(TARGET_PASS)\r"
             }
@@ -559,12 +516,33 @@ connect() {
                 exit 12
             }
         }
+EXPECT_EOF
+}
 
-        # ---------------------------------------------------------------------
-        # Étape 3 : vérif rapide d'erreur auth target puis interact
-        # Timeout court (3s) : juste assez pour détecter un rejet immédiat,
-        # puis on bascule en interactif sans bloquer l'utilisateur.
-        # ---------------------------------------------------------------------
+# =============================================================================
+# Connexion SSH interactive via expect (préambule commun + interact auto-sudo)
+# =============================================================================
+run_shell() {
+    local target="$1" port="$2"
+
+    resolve_target "$target" "$port"
+    export VAULT_PASS="$R_VAULT_PASS"
+    export TARGET_PASS="$R_TARGET_PASS"
+    export CONN_STR="$R_CONN_STR"
+    debug "Spawn: ssh -p $port $SSH_OPTS $R_CONN_STR"
+
+    if [[ "${DEBUG:-0}" == 1 ]]; then
+        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
+    fi
+
+    local rc=0 expect_script
+    expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
+    local spawn_line="spawn -noecho ssh -p $port $SSH_OPTS \$env(CONN_STR)"
+
+    {
+        emit_auth_preamble "$spawn_line"
+        cat <<EXPECT_EOF
+
         set timeout 3
         expect {
             -re {(?i)permission denied} {
@@ -583,21 +561,16 @@ connect() {
             -re {.+} {}
         }
 
-        # Bascule en mode interactif : l'utilisateur reprend le contrôle
-        # Ctrl-C et autres signaux sont transmis au shell distant
-        # Auto-sudo : intercepte les prompts [sudo] et envoie TARGET_PASS
         set timeout -1
         interact -o -re {\[sudo\] [Pp]assword[^:]*:} {
             send -- "\$env(TARGET_PASS)\r"
         }
 EXPECT_EOF
+    } > "$expect_script"
 
     expect -f "$expect_script" || rc=$?
     rm -f "$expect_script"
-
-    # Nettoyage immédiat des secrets en mémoire (exécuté même si expect échoue)
     unset VAULT_PASS TARGET_PASS CONN_STR
-
     return $rc
 }
 
@@ -647,7 +620,7 @@ main() {
         exit 2
     fi
 
-    connect "$1" "$PORT"
+    run_shell "$1" "$PORT"
 }
 
 # N'exécute main que si le script est lancé directement (pas sourcé par les tests)
