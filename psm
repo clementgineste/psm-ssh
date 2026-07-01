@@ -549,48 +549,55 @@ EXPECT_EOF
 }
 
 # =============================================================================
-# Parsing CLI
+# Point d'entrée
 # =============================================================================
-DEBUG=0
-PORT=22
-LIST_ONLY=0
+main() {
+    DEBUG=0
+    PORT=22
+    LIST_ONLY=0
 
-while getopts ":dlp:v:h" opt; do
-    case "$opt" in
-        d) DEBUG=1 ;;
-        l) LIST_ONLY=1 ;;
-        p) PORT="$OPTARG" ;;
-        v) VAULT_USER="$OPTARG" ;;
-        h) usage; exit 0 ;;
-        \?) err "Option inconnue : -$OPTARG"; usage; exit 2 ;;
-        :)  err "Option -$OPTARG requiert un argument"; exit 2 ;;
-    esac
-done
-shift $((OPTIND - 1))
+    while getopts ":dlp:v:h" opt; do
+        case "$opt" in
+            d) DEBUG=1 ;;
+            l) LIST_ONLY=1 ;;
+            p) PORT="$OPTARG" ;;
+            v) VAULT_USER="$OPTARG" ;;
+            h) usage; exit 0 ;;
+            \?) err "Option inconnue : -$OPTARG"; usage; exit 2 ;;
+            :)  err "Option -$OPTARG requiert un argument"; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
 
-# Détection de secrets résiduels (nettoyage raté d'une session précédente)
-if [[ -n "${VAULT_PASS:-}" || -n "${TARGET_PASS:-}" ]]; then
-    warn "Secrets résiduels détectés dans l'environnement (session précédente mal terminée) — purge"
-    unset VAULT_PASS TARGET_PASS
+    # Détection de secrets résiduels (nettoyage raté d'une session précédente)
+    if [[ -n "${VAULT_PASS:-}" || -n "${TARGET_PASS:-}" ]]; then
+        warn "Secrets résiduels détectés dans l'environnement (session précédente mal terminée) — purge"
+        unset VAULT_PASS TARGET_PASS
+    fi
+
+    check_deps
+
+    if (( LIST_ONLY == 1 )); then
+        list_targets
+        exit $?
+    fi
+
+    if (( $# != 1 )); then
+        err "Argument manquant : <targetuser@targethost>"
+        usage
+        exit 2
+    fi
+
+    # Validation port
+    if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
+        err "Port invalide : $PORT"
+        exit 2
+    fi
+
+    connect "$1" "$PORT"
+}
+
+# N'exécute main que si le script est lancé directement (pas sourcé par les tests)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
 fi
-
-check_deps
-
-if (( LIST_ONLY == 1 )); then
-    list_targets
-    exit $?
-fi
-
-if (( $# != 1 )); then
-    err "Argument manquant : <targetuser@targethost>"
-    usage
-    exit 2
-fi
-
-# Validation port
-if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
-    err "Port invalide : $PORT"
-    exit 2
-fi
-
-connect "$1" "$PORT"
