@@ -273,6 +273,36 @@ Host srv-prod01
 **Auto-sudo** : les prompts `[sudo] password for ...:` sont automatiquement
 remplis avec le target password pendant la session interactive.
 
+## Exécuter une commande (non-interactif)
+
+Comme `ssh host "cmd"`, un 2ᵉ argument est exécuté sur la cible sans ouvrir de
+shell interactif ; le code retour de la commande est propagé.
+
+```bash
+psm srv-prod01 "systemctl status nginx"
+psm admin@srv-prod01 ls -la /data
+```
+
+> Le proxy PSMP injecte un banner (« session is being recorded » + banner légal)
+> **avant** la sortie de la commande, même en non-interactif. C'est un réglage
+> serveur CyberArk, non désactivable côté client — en tenir compte lors d'un pipe.
+
+## Transfert de fichiers (`psm cp`)
+
+Transfert via `scp` à travers le PSMP. Push et pull, récursif, multi-fichiers.
+Les flags scp sont transmis tels quels.
+
+```bash
+psm cp ./deploy.sh srv-prod01:/tmp/        # push
+psm cp ./deploy.sh admin@srv-prod01:/tmp/  # push, user explicite
+psm cp srv-prod01:/etc/hosts .             # pull
+psm cp -r ./dist srv-prod01:/var/www/      # récursif
+psm cp a.conf b.conf srv-prod01:/etc/      # multi-fichiers
+```
+
+Le port du PSMP se règle via `psm -p PORT cp …` (traduit en `-P` pour scp).
+Le code retour de scp est propagé.
+
 ## Résolution hostname
 
 Le script résout automatiquement les hostnames avant de les passer au PSMP,
@@ -376,6 +406,7 @@ psm admin@srv-prod01
 | 13    | Permission refusée (clé SSH rejetée)          |
 | 20–24 | Échec entre vault et target (incl. MFA)       |
 | 30–32 | Échec après auth target                       |
+| (scp/cmd) | Code retour réel de scp/ssh propagé (0 = ok)  |
 
 ## Limitations connues
 
@@ -387,6 +418,13 @@ psm admin@srv-prod01
 - L'auto-sudo ne matche que le format `[sudo] password for ...:`.
   Les prompts sudo custom ou les prompts `su` ne sont pas interceptés.
 - La résolution hostname ne gère pas IPv6 explicitement.
+- **exec — banner PSMP** : la sortie de `psm host "cmd"` est précédée du banner
+  légal / notification d'enregistrement injecté par le PSMP (non désactivable
+  côté client).
+- **`psm cp` — détection cible** : un flag scp à valeur contenant `:` avant un
+  `/` (ex. `-o Foo=a:b`, rare) peut être confondu avec une cible distante ;
+  utiliser `scp` directement dans ce cas.
+- **`psm cp`** ne gère pas le transfert distant→distant (une seule cible PSMP).
 
 ## Licence
 
