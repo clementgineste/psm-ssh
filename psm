@@ -39,6 +39,7 @@ GPG_MASTER_FILE="${GPG_MASTER_FILE:-$HOME/.psm-master.gpg}"
 LDAP_USER="${LDAP_USER:-}"  # liste de users LDAP/AD (séparés par espaces), ex: "john.doe jane.smith"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR}"
 EXPECT_TIMEOUT="${EXPECT_TIMEOUT:-30}"
+AUTO_SUDO="${AUTO_SUDO:-1}"  # 1 = auto-remplit les prompts [sudo] avec TARGET_PASS ; 0 = sudo manuel
 
 # =============================================================================
 # Couleurs (désactivées si stderr n'est pas un terminal)
@@ -74,6 +75,7 @@ depuis le champ 'User' de ~/.ssh/config pour ce host.
 
 Options:
   -d          Debug mode (affiche tous les échanges expect)
+  -S          Désactive l'auto-sudo pour cette session (sudo manuel)
   -l          Liste les targets disponibles dans KeePassXC
   -p PORT     Port SSH du PSMP (défaut: 22)
   -v VUSER    Override du vault user (défaut: \$VAULT_USER)
@@ -96,11 +98,12 @@ Configuration courante:
   KDBX_GROUP         = $KDBX_GROUP
   VAULT_PASS_ENTRY   = $VAULT_PASS_ENTRY
   LDAP_USER          = ${LDAP_USER:-<non défini>}
+  AUTO_SUDO          = ${AUTO_SUDO:-1}
 
 Variables d'environnement supportées:
   PSMP_HOST, VAULT_USER, KDBX_PATH, KDBX_GROUP,
   VAULT_PASS_ENTRY, GPG_MASTER_FILE, LDAP_USER,
-  SSH_OPTS, EXPECT_TIMEOUT
+  SSH_OPTS, EXPECT_TIMEOUT, AUTO_SUDO
 
 Override PSMP par host (~/.ssh/config):
   Host LC*
@@ -548,6 +551,12 @@ run_shell() {
         warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
     fi
 
+    if [[ "${AUTO_SUDO:-1}" == 1 ]]; then
+        info "Auto-sudo actif (le mot de passe target répond aux prompts [sudo])"
+    else
+        info "Auto-sudo désactivé — sudo manuel"
+    fi
+
     local rc=0 expect_script
     expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
     local spawn_line="spawn -noecho ssh -p $port $SSH_OPTS \$env(CONN_STR)"
@@ -575,10 +584,18 @@ run_shell() {
         }
 
         set timeout -1
+EXPECT_EOF
+        # Hook auto-sudo conditionnel : AUTO_SUDO=1 répond aux prompts [sudo]
+        # avec le target password ; AUTO_SUDO=0 → interact nu (sudo manuel).
+        if [[ "${AUTO_SUDO:-1}" == 1 ]]; then
+            cat <<EXPECT_EOF
         interact -o -re {\[sudo\] [Pp]assword[^:]*:} {
             send -- "\$env(TARGET_PASS)\r"
         }
 EXPECT_EOF
+        else
+            printf '        interact\n'
+        fi
     } > "$expect_script"
 
     expect -f "$expect_script" || rc=$?
@@ -676,9 +693,10 @@ main() {
     PORT=22
     LIST_ONLY=0
 
-    while getopts ":dlp:v:h" opt; do
+    while getopts ":dlp:v:hS" opt; do
         case "$opt" in
             d) DEBUG=1 ;;
+            S) AUTO_SUDO=0 ;;
             l) LIST_ONLY=1 ;;
             p) PORT="$OPTARG" ;;
             v) VAULT_USER="$OPTARG" ;;

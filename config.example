@@ -41,3 +41,8 @@ LDAP_USER="ldap.user"
 # -----------------------------------------------------------------------------
 # SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
 # EXPECT_TIMEOUT="30"
+
+# Auto-sudo : 1 = répond automatiquement aux prompts [sudo] avec le target
+# password (pratique sur la cible directe). 0 = sudo manuel (recommandé si tu
+# rebondis vers d'autres serveurs — évite d'envoyer le mauvais mot de passe).
+# AUTO_SUDO="1"

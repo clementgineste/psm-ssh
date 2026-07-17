@@ -245,6 +245,7 @@ Variables supportées :
 | `LDAP_USER`        | (vide)                | Liste d'users LDAP/AD (séparés par espaces) |
 | `SSH_OPTS`         | (voir script)         | Options ssh                              |
 | `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) pour les prompts             |
+| `AUTO_SUDO`        | `1`                   | `1` auto-remplit les prompts `[sudo]` ; `0` sudo manuel |
 
 ## Usage
 
@@ -252,6 +253,7 @@ Variables supportées :
 psm admin@srv-prod01              # syntaxe user@host explicite
 psm srv-prod01                    # user extrait de ~/.ssh/config
 psm -d root@switch-core01         # debug : affiche tous les échanges expect
+psm -S admin@srv-prod01           # désactive l'auto-sudo (sudo manuel)
 psm -p 2222 admin@srv-prod01      # port SSH custom
 psm -v autre.user admin@host      # override du vault user
 psm -l                            # liste les targets dans KeePassXC
@@ -390,8 +392,14 @@ psm admin@srv-prod01
   déchiffrement passe par `gpg-agent` (cache limité dans le temps).
 - **Mode debug (`-d`)** : un avertissement est affiché car `exp_internal`
   expose les mots de passe en clair dans la sortie. Ne pas utiliser en prod.
-- **Auto-sudo** : le target password est envoyé automatiquement sur
-  les prompts `[sudo]` pendant la session interactive.
+- **Auto-sudo** (défaut activé) : le target password répond automatiquement aux
+  prompts `[sudo] password for …:` pendant la session. **Attention au rebond** :
+  si tu fais `ssh` vers un autre serveur depuis la cible, ce mécanisme enverrait
+  le mot de passe de la cible au prompt sudo du serveur rebondi (mauvais mot de
+  passe, et fuite d'un secret). Désactive-le alors :
+  - `psm -S host` pour la session, ou `AUTO_SUDO=0` en config par défaut ;
+  - à la volée dans une session déjà ouverte : `export SUDO_PROMPT='pw: '`
+    (change le prompt sudo pour qu'il échappe au mécanisme) puis `sudo -s`.
 
 ## Codes de sortie
 
