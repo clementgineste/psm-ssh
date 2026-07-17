@@ -17,7 +17,7 @@ _psm_complete() {
 
     # Flags
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "-d -l -p -v -h" -- "$cur") )
+        COMPREPLY=( $(compgen -W "-d -S -l -p -v -h" -- "$cur") )
         return
     fi
 
@@ -30,7 +30,14 @@ _psm_complete() {
             local prefix="${cur%@*}@" partial="${cur#*@}"
             COMPREPLY=( $(compgen -P "$prefix" -W "$hosts_cp" -- "$partial") )
         else
-            COMPREPLY=( $(compgen -f -W "$hosts_cp" -- "$cur") )
+            # Chemins locaux (descente dans les sous-dossiers) + hostnames connus.
+            if declare -F _filedir >/dev/null 2>&1; then
+                _filedir
+            else
+                compopt -o filenames 2>/dev/null
+                COMPREPLY=( $(compgen -f -- "$cur") )
+            fi
+            COMPREPLY+=( $(compgen -W "$hosts_cp" -- "$cur") )
         fi
         return
     fi
