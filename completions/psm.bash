@@ -11,7 +11,7 @@ _psm_complete() {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Flag -p attend un argument (port) → pas de complétion
-    if [[ "$prev" == "-p" || "$prev" == "-v" ]]; then
+    if [[ "$prev" == -*[pv] ]]; then
         return
     fi
 
@@ -21,8 +21,19 @@ _psm_complete() {
         return
     fi
 
+    # Index du premier argument non-flag (saute les flags et la valeur de
+    # -p/-v, y compris groupés : -dp 2222) → détecte `cp` après des flags.
+    local i cmd_idx=0
+    for (( i = 1; i < COMP_CWORD; i++ )); do
+        case "${COMP_WORDS[i]}" in
+            -*[pv]) (( i++ )) ;;
+            -*)     ;;
+            *)      cmd_idx=$i; break ;;
+        esac
+    done
+
     # Sous-commande cp : compléter fichiers locaux + hostnames
-    if [[ "${COMP_WORDS[1]}" == "cp" && "$COMP_CWORD" -ge 2 ]]; then
+    if (( cmd_idx > 0 )) && [[ "${COMP_WORDS[cmd_idx]}" == "cp" ]]; then
         local hosts_cp
         hosts_cp=$(awk '/^[Hh]ost / && !/[*?]/ {for(i=2;i<=NF;i++) print $i}' \
                    ~/.ssh/config 2>/dev/null)
@@ -35,7 +46,7 @@ _psm_complete() {
                 _filedir
             else
                 compopt -o filenames 2>/dev/null
-                COMPREPLY=( $(compgen -f -- "$cur") )
+                mapfile -t COMPREPLY < <(compgen -f -- "$cur")
             fi
             COMPREPLY+=( $(compgen -W "$hosts_cp" -- "$cur") )
         fi
