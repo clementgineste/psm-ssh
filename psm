@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# psm — SSH via CyberArk PSMP avec récupération automatique des credentials
-#       depuis KeePassXC (Secret Service API, fallback keepassxc-cli).
+# psm — SSH through a CyberArk PSMP with automatic credential retrieval
+#       from KeePassXC (Secret Service API, keepassxc-cli fallback).
 #
-# Flow : ssh vaultuser@targetuser@targethost@psmphost
-#   Mode clé SSH : auth vault transparente (ssh-agent) → "Password:" target
-#   Mode password : "Vault Password:" → "Password:" target
-#   → Shell interactif sur le serveur cible
+# Flow: ssh vaultuser@targetuser@targethost@psmphost
+#   SSH key mode : transparent vault auth (ssh-agent) → target "Password:"
+#   Password mode: "Vault Password:" → target "Password:"
+#   → Interactive shell on the target server
 
 set -euo pipefail
 
 # =============================================================================
-# CONFIG — le script cherche un fichier de config dans cet ordre :
-#   1. $PSM_CONFIG (si défini)
+# CONFIG — the script looks for a config file in this order:
+#   1. $PSM_CONFIG (if set)
 #   2. ~/.config/psm/config
 #   3. ~/.psmrc
-# Le premier trouvé est sourcé. Si aucun, les défauts ci-dessous s'appliquent.
+# The first one found is sourced. If none is found, the defaults below apply.
 #
-# Précédence (selon comment tu écris le fichier de config) :
-#   - `VAULT_USER="foo"`              → config surcharge l'environnement
-#   - `: "${VAULT_USER:=foo}"`        → environnement garde la priorité
+# Precedence (depends on how you write the config file):
+#   - `VAULT_USER="foo"`              → config overrides the environment
+#   - `: "${VAULT_USER:=foo}"`        → environment keeps priority
 # =============================================================================
 PSM_CONFIG="${PSM_CONFIG:-}"
 for _candidate in "$PSM_CONFIG" "$HOME/.config/psm/config" "$HOME/.psmrc"; do
@@ -31,18 +31,18 @@ done
 unset _candidate
 
 PSMP_HOST="${PSMP_HOST:-psmp.example.com}"
-VAULT_USER="${VAULT_USER:-ton.vault.user}"
+VAULT_USER="${VAULT_USER:-your.vault.user}"
 KDBX_PATH="${KDBX_PATH:-$HOME/Passwords.kdbx}"
 KDBX_GROUP="${KDBX_GROUP:-PSM}"
 VAULT_PASS_ENTRY="${VAULT_PASS_ENTRY:-VaultPassword}"
 GPG_MASTER_FILE="${GPG_MASTER_FILE:-$HOME/.psm-master.gpg}"
-LDAP_USER="${LDAP_USER:-}"  # liste de users LDAP/AD (séparés par espaces), ex: "john.doe jane.smith"
+LDAP_USER="${LDAP_USER:-}"  # list of LDAP/AD users (space-separated), e.g. "john.doe jane.smith"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR}"
 EXPECT_TIMEOUT="${EXPECT_TIMEOUT:-30}"
-AUTO_SUDO="${AUTO_SUDO:-1}"  # 1 = auto-remplit les prompts [sudo] avec TARGET_PASS ; 0 = sudo manuel
+AUTO_SUDO="${AUTO_SUDO:-1}"  # 1 = auto-fill [sudo] prompts with TARGET_PASS; 0 = manual sudo
 
 # =============================================================================
-# Couleurs (désactivées si stderr n'est pas un terminal)
+# Colors (disabled when stderr is not a terminal)
 # =============================================================================
 if [[ -t 2 ]]; then
     C_RED=$'\033[31m'
@@ -60,59 +60,59 @@ info()  { printf '%s[INFO]%s %s\n'  "$C_CYN" "$C_RST" "$*" >&2; }
 debug() { [[ "${DEBUG:-0}" == 1 ]] && printf '%s[DBG]%s  %s\n' "$C_GRN" "$C_RST" "$*" >&2 || true; }
 
 # =============================================================================
-# Aide
+# Help
 # =============================================================================
 usage() {
     cat <<EOF
-Usage: psm [options] <targetuser@targethost|targethost> [commande]
-       psm [options] cp [flags-scp] SRC... DST
+Usage: psm [options] <targetuser@targethost|targethost> [command]
+       psm [options] cp [scp-flags] SRC... DST
 
-Connecte à un serveur cible via le proxy CyberArk PSMP.
-Récupère les mots de passe (vault + target) depuis KeePassXC.
+Connects to a target server through the CyberArk PSMP proxy.
+Retrieves the passwords (vault + target) from KeePassXC.
 
-Si la cible est un hostname seul (ex: 'srv-prod01'), l'user est extrait
-depuis le champ 'User' de ~/.ssh/config pour ce host.
+If the target is a bare hostname (e.g. 'srv-prod01'), the user is taken
+from the 'User' field of ~/.ssh/config for that host.
 
 Options:
-  -d          Debug mode (affiche tous les échanges expect)
-  -S          Désactive l'auto-sudo pour cette session (sudo manuel)
-  -l          Liste les targets disponibles dans KeePassXC
-  -p PORT     Port SSH du PSMP (défaut: 22)
-  -v VUSER    Override du vault user (défaut: \$VAULT_USER)
-  -h          Affiche cette aide
+  -d          Debug mode (shows all expect exchanges)
+  -S          Disable auto-sudo for this session (manual sudo)
+  -l          List the targets available in KeePassXC
+  -p PORT     PSMP SSH port (default: 22)
+  -v VUSER    Override the vault user (default: \$VAULT_USER)
+  -h          Show this help
 
-Exemples:
-  psm admin@srv-prod01            # syntaxe user@host explicite
-  psm srv-prod01                  # user extrait de ~/.ssh/config
+Examples:
+  psm admin@srv-prod01            # explicit user@host syntax
+  psm srv-prod01                  # user taken from ~/.ssh/config
   psm -d root@switch-core01
   psm -p 2222 admin@srv-prod01
   psm -l
-  psm srv-prod01 "systemctl status nginx"   # exécute une commande (non-interactif)
-  psm cp ./deploy.sh srv-prod01:/tmp/        # pousse un fichier (scp)
-  psm cp srv-prod01:/etc/hosts .             # récupère un fichier
-  psm cp -r ./dist srv-prod01:/var/www/      # transfert récursif
+  psm srv-prod01 "systemctl status nginx"   # run a command (non-interactive)
+  psm cp ./deploy.sh srv-prod01:/tmp/        # push a file (scp)
+  psm cp srv-prod01:/etc/hosts .             # fetch a file
+  psm cp -r ./dist srv-prod01:/var/www/      # recursive transfer
 
-Configuration courante:
+Current configuration:
   PSMP_HOST          = $PSMP_HOST
   VAULT_USER         = $VAULT_USER
   KDBX_GROUP         = $KDBX_GROUP
   VAULT_PASS_ENTRY   = $VAULT_PASS_ENTRY
-  LDAP_USER          = ${LDAP_USER:-<non défini>}
+  LDAP_USER          = ${LDAP_USER:-<unset>}
   AUTO_SUDO          = ${AUTO_SUDO:-1}
 
-Variables d'environnement supportées:
+Supported environment variables:
   PSMP_HOST, VAULT_USER, KDBX_PATH, KDBX_GROUP,
   VAULT_PASS_ENTRY, GPG_MASTER_FILE, LDAP_USER,
   SSH_OPTS, EXPECT_TIMEOUT, AUTO_SUDO
 
-Override PSMP par host (~/.ssh/config):
+Per-host PSMP override (~/.ssh/config):
   Host LC*
       SetEnv PSM_PSMP_HOST=psmp-secure.example.com
 EOF
 }
 
 # =============================================================================
-# Vérification des dépendances
+# Dependency check
 # =============================================================================
 check_deps() {
     local missing=()
@@ -120,71 +120,71 @@ check_deps() {
     command -v ssh    >/dev/null 2>&1 || missing+=("ssh")
 
     if (( ${#missing[@]} > 0 )); then
-        err "Dépendances manquantes :"
+        err "Missing dependencies:"
         for m in "${missing[@]}"; do err "  - $m"; done
-        err "Installation Debian/Ubuntu : apt install expect openssh-client"
-        err "Installation RHEL/Fedora   : dnf install expect openssh-clients"
+        err "Install on Debian/Ubuntu: apt install expect openssh-client"
+        err "Install on RHEL/Fedora  : dnf install expect openssh-clients"
         exit 2
     fi
 
-    # Sources de credentials : au moins une requise
+    # Credential sources: at least one is required
     local has_secret_tool=0 has_keepassxc=0
     command -v secret-tool   >/dev/null 2>&1 && has_secret_tool=1
     command -v keepassxc-cli >/dev/null 2>&1 && has_keepassxc=1
 
     if (( !has_secret_tool && !has_keepassxc )); then
-        err "Aucune source de credentials disponible"
-        err "Installe au moins un des outils suivants :"
-        err "  - secret-tool   (libsecret-tools) : KeePassXC GUI + Secret Service"
-        err "  - keepassxc-cli                    : ligne de commande + GPG"
+        err "No credential source available"
+        err "Install at least one of the following tools:"
+        err "  - secret-tool   (libsecret-tools): KeePassXC GUI + Secret Service"
+        err "  - keepassxc-cli                  : command line + GPG"
         exit 2
     fi
 
-    (( has_secret_tool )) || debug "secret-tool absent : mode Secret Service désactivé"
-    (( has_keepassxc ))   || debug "keepassxc-cli absent : mode CLI désactivé"
+    (( has_secret_tool )) || debug "secret-tool not found: Secret Service mode disabled"
+    (( has_keepassxc ))   || debug "keepassxc-cli not found: CLI mode disabled"
 }
 
 # =============================================================================
-# Récupération d'un mot de passe : Secret Service → fallback keepassxc-cli
+# Password retrieval: Secret Service → keepassxc-cli fallback
 # =============================================================================
 fetch_password() {
     local entry="$1"
     local quiet="${2:-0}"
     local pass=""
 
-    # 1. Secret Service (KeePassXC GUI déverrouillé + intégration activée)
+    # 1. Secret Service (KeePassXC GUI unlocked + integration enabled)
     if command -v secret-tool >/dev/null 2>&1; then
         if pass=$(secret-tool lookup Title "$entry" 2>/dev/null) && [[ -n "$pass" ]]; then
-            debug "Mot de passe récupéré via secret-tool pour '$entry'"
+            debug "Password retrieved via secret-tool for '$entry'"
             printf '%s' "$pass"
             return 0
         fi
-        debug "secret-tool a échoué pour '$entry', tentative keepassxc-cli"
+        debug "secret-tool failed for '$entry', trying keepassxc-cli"
     fi
 
-    # 2. keepassxc-cli avec master password déchiffré par GPG (gpg-agent cache la passphrase)
+    # 2. keepassxc-cli with the master password decrypted by GPG (gpg-agent caches the passphrase)
     if command -v keepassxc-cli >/dev/null 2>&1 && [[ -f "$KDBX_PATH" ]]; then
         if [[ -f "$GPG_MASTER_FILE" ]] && command -v gpg >/dev/null 2>&1; then
-            debug "Déchiffrement du master password via GPG ($GPG_MASTER_FILE)"
+            debug "Decrypting the master password via GPG ($GPG_MASTER_FILE)"
             if pass=$(gpg -qd "$GPG_MASTER_FILE" 2>/dev/null \
                        | keepassxc-cli show -qsa Password "$KDBX_PATH" "$KDBX_GROUP/$entry" 2>/dev/null) \
                && [[ -n "$pass" ]]; then
-                debug "Mot de passe récupéré via keepassxc-cli + GPG pour '$entry'"
+                debug "Password retrieved via keepassxc-cli + GPG for '$entry'"
                 printf '%s' "$pass"
                 return 0
             fi
         fi
 
-        # 3. Fallback interactif — uniquement si GPG n'est PAS configuré
-        # (si GPG_MASTER_FILE existe, on considère la base déchiffrable : un
-        # échec signifie "entrée introuvable", pas "base inaccessible" — donc
-        # pas besoin de re-prompter le master password interactivement)
-        # Retrait du flag -q qui supprimait le prompt master password.
+        # 3. Interactive fallback — only when GPG is NOT configured
+        # (if GPG_MASTER_FILE exists, the database is assumed to be decryptable:
+        # a failure means "entry not found", not "database unreachable" — so
+        # there is no point prompting for the master password interactively)
+        # The -q flag is dropped here because it suppressed the master password prompt.
         if (( ! quiet )) && [[ ! -f "$GPG_MASTER_FILE" ]]; then
-            debug "Fallback keepassxc-cli interactif pour '$entry'"
+            debug "Interactive keepassxc-cli fallback for '$entry'"
             if pass=$(keepassxc-cli show -sa Password "$KDBX_PATH" "$KDBX_GROUP/$entry") \
                && [[ -n "$pass" ]]; then
-                debug "Mot de passe récupéré via keepassxc-cli pour '$entry'"
+                debug "Password retrieved via keepassxc-cli for '$entry'"
                 printf '%s' "$pass"
                 return 0
             fi
@@ -192,27 +192,27 @@ fetch_password() {
     fi
 
     if (( quiet )); then
-        debug "Lookup silencieux échoué pour '$entry'"
+        debug "Silent lookup failed for '$entry'"
         return 1
     fi
 
-    err "Impossible de récupérer le mot de passe pour : $entry"
-    err "Vérifie que :"
-    err "  - KeePassXC est ouvert et déverrouillé (mode Secret Service)"
-    err "  - Ou ~/.psm-master.gpg existe (mode keepassxc-cli + GPG)"
-    err "  - Le groupe '$KDBX_GROUP' contient l'entrée '$entry'"
+    err "Unable to retrieve the password for: $entry"
+    err "Check that:"
+    err "  - KeePassXC is open and unlocked (Secret Service mode)"
+    err "  - Or ~/.psm-master.gpg exists (keepassxc-cli + GPG mode)"
+    err "  - The '$KDBX_GROUP' group contains the '$entry' entry"
     return 1
 }
 
 # =============================================================================
-# Liste des targets disponibles depuis KeePassXC
+# List the targets available in KeePassXC
 # =============================================================================
 list_targets() {
-    info "Targets disponibles dans le groupe '$KDBX_GROUP' :"
+    info "Targets available in group '$KDBX_GROUP':"
 
-    # secret-tool search retourne les entrées avec un attribut donné
-    # On cherche celles ayant un attribut xdg:schema (toutes les entrées KeePassXC)
-    # puis on filtre par format user@host
+    # secret-tool search returns the entries that have a given attribute.
+    # We look for entries with an xdg:schema attribute (all KeePassXC entries)
+    # and then keep the ones in user@host format.
     local found=0
     if command -v secret-tool >/dev/null 2>&1; then
         while IFS= read -r title; do
@@ -227,16 +227,16 @@ list_targets() {
         return 0
     fi
 
-    # fallback keepassxc-cli (GPG d'abord, puis interactif)
+    # keepassxc-cli fallback (GPG first, then interactive)
     if command -v keepassxc-cli >/dev/null 2>&1 && [[ -f "$KDBX_PATH" ]]; then
         local entries=""
         if [[ -f "$GPG_MASTER_FILE" ]] && command -v gpg >/dev/null 2>&1; then
-            debug "Liste via keepassxc-cli + GPG"
+            debug "Listing via keepassxc-cli + GPG"
             entries=$(gpg -qd "$GPG_MASTER_FILE" 2>/dev/null \
                       | keepassxc-cli ls -q "$KDBX_PATH" "$KDBX_GROUP" 2>/dev/null) || true
         fi
         if [[ -z "$entries" ]]; then
-            warn "Fallback keepassxc-cli interactif (master password requis)"
+            warn "Interactive keepassxc-cli fallback (master password required)"
             entries=$(keepassxc-cli ls -q "$KDBX_PATH" "$KDBX_GROUP" 2>/dev/null) || true
         fi
         if [[ -n "$entries" ]]; then
@@ -245,14 +245,14 @@ list_targets() {
         fi
     fi
 
-    err "Aucune source disponible pour lister les targets"
+    err "No source available to list the targets"
     return 1
 }
 
 # =============================================================================
-# Parsing des arguments de `psm cp` : identifie l'unique remote spec
-# (règle scp standard : un ':' avant tout '/', forme [user@]host:path).
-# Les flags (-x) et les chemins locaux sont ignorés pour la détection.
+# Parsing of the `psm cp` arguments: finds the single remote spec
+# (standard scp rule: a ':' before any '/', form [user@]host:path).
+# Flags (-x) and local paths are ignored for the detection.
 # =============================================================================
 parse_scp_args() {
     PSA_REMOTE_HOST=""
@@ -262,8 +262,8 @@ parse_scp_args() {
     local i arg count=0
     for i in "${!PSA_ARGV[@]}"; do
         arg="${PSA_ARGV[$i]}"
-        [[ "$arg" == -* ]] && continue          # flag scp : jamais un remote spec
-        if [[ "$arg" =~ ^[^/]*: ]]; then         # ':' avant tout '/'
+        [[ "$arg" == -* ]] && continue          # scp flag: never a remote spec
+        if [[ "$arg" =~ ^[^/]*: ]]; then         # ':' before any '/'
             PSA_REMOTE_INDEX=$i
             PSA_REMOTE_HOST="${arg%%:*}"
             PSA_REMOTE_PATH="${arg#*:}"
@@ -272,47 +272,47 @@ parse_scp_args() {
     done
 
     if (( count == 0 )); then
-        err "psm cp : aucune cible distante (attendu 'host:/chemin')"
+        err "psm cp: no remote target (expected 'host:/path')"
         return 2
     fi
     if (( count > 1 )); then
-        err "psm cp : transfert distant→distant non supporté (une seule cible 'host:/chemin')"
+        err "psm cp: remote-to-remote transfer is not supported (a single 'host:/path' target)"
         return 2
     fi
     return 0
 }
 
 # =============================================================================
-# Résolution de la cible + fetch des credentials
+# Target resolution + credential fetch
 # =============================================================================
 resolve_target() {
-    # Single-shot par invocation : les globals R_* ne sont pas remis à zéro en
-    # entrée (seul R_PSMP_HOST est ré-initialisé). Ne pas appeler en boucle sans
-    # exit entre deux, sinon des valeurs R_* précédentes pourraient persister.
+    # Single-shot per invocation: the R_* globals are not reset on entry (only
+    # R_PSMP_HOST is re-initialized). Do not call this in a loop without an exit
+    # in between, or R_* values from a previous call could persist.
     local target="$1" port="$2"
     local target_user="" target_host=""
     R_PSMP_HOST="$PSMP_HOST"
 
-    # Parse target : 'user@host' ou 'host' seul (user sera extrait de ~/.ssh/config)
+    # Parse the target: 'user@host' or bare 'host' (the user is then taken from ~/.ssh/config)
     if [[ "$target" == *@* ]]; then
         target_user="${target%@*}"
         target_host="${target#*@}"
         if [[ -z "$target_user" || -z "$target_host" ]]; then
-            err "Format invalide : '$target' (attendu: user@host ou host)"
+            err "Invalid format: '$target' (expected: user@host or host)"
             exit 2
         fi
     else
         target_host="$target"
     fi
 
-    # Résolution via ssh -G : récupère hostname ET user (si pas spécifié)
+    # Resolution via ssh -G: gets the hostname AND the user (if not given)
     local original_host="$target_host"
     local ssh_g_output
-    debug "Résolution ssh -G $target_host"
+    debug "Resolving ssh -G $target_host"
     local ssh_g_stderr="/dev/null"
     [[ "${DEBUG:-0}" == 1 ]] && ssh_g_stderr="/dev/stderr"
     if ! ssh_g_output=$(ssh -G "$target_host" 2>"$ssh_g_stderr"); then
-        err "ssh -G a échoué pour '$target_host' — vérifie ~/.ssh/config"
+        err "ssh -G failed for '$target_host' — check ~/.ssh/config"
         exit 2
     fi
 
@@ -320,74 +320,74 @@ resolve_target() {
     resolved=$(awk '/^hostname / {print $2}' <<< "$ssh_g_output")
     [[ -n "$resolved" ]] && target_host="$resolved"
 
-    # Si user non spécifié dans la cmdline, l'extraire depuis ssh -G
+    # If no user was given on the command line, take it from ssh -G
     if [[ -z "$target_user" ]]; then
         target_user=$(awk '/^user / {print $2}' <<< "$ssh_g_output")
         if [[ -z "$target_user" ]]; then
-            err "Pas d'user spécifié pour '$original_host'"
-            err "Utilise la syntaxe 'user@host' ou ajoute 'User xxx' dans ~/.ssh/config"
+            err "No user specified for '$original_host'"
+            err "Use the 'user@host' syntax or add 'User xxx' to ~/.ssh/config"
             exit 2
         fi
-        debug "User extrait de ~/.ssh/config : $target_user"
+        debug "User taken from ~/.ssh/config: $target_user"
     fi
 
-    # Override PSMP_HOST si SetEnv PSM_PSMP_HOST=... défini dans ~/.ssh/config
-    # (ex: Host LC*  /  SetEnv PSM_PSMP_HOST=psmp-secure.example.com)
+    # Override PSMP_HOST if SetEnv PSM_PSMP_HOST=... is set in ~/.ssh/config
+    # (e.g. Host LC*  /  SetEnv PSM_PSMP_HOST=psmp-secure.example.com)
     local host_psmp
     host_psmp=$(awk '/^setenv PSM_PSMP_HOST=/ {sub(/^setenv PSM_PSMP_HOST=/,""); print; exit}' <<< "$ssh_g_output")
     if [[ -n "$host_psmp" ]]; then
-        debug "PSMP_HOST overridé par ~/.ssh/config : $PSMP_HOST → $host_psmp"
+        debug "PSMP_HOST overridden by ~/.ssh/config: $PSMP_HOST → $host_psmp"
         R_PSMP_HOST="$host_psmp"
     fi
-    # 2. /etc/hosts + DNS (timeout 2s pour éviter les blocages)
+    # 2. /etc/hosts + DNS (2s timeout to avoid hanging)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        debug "Résolution DNS : getent hosts $target_host (timeout 2s)"
+        debug "DNS resolution: getent hosts $target_host (2s timeout)"
         local ip
         ip=$(timeout 2 getent hosts "$target_host" 2>/dev/null | awk '{print $1}') || true
         if [[ -n "$ip" ]]; then
             target_host="$ip"
         else
-            debug "DNS non résolu, hostname passé tel quel"
+            debug "DNS not resolved, hostname passed as is"
         fi
     fi
     if [[ "$target_host" != "$original_host" ]]; then
-        debug "Résolution : $original_host → $target_host"
-        info "Cible : $target_user @ $original_host → $target_host (via $R_PSMP_HOST:$port)"
+        debug "Resolution: $original_host → $target_host"
+        info "Target: $target_user @ $original_host → $target_host (via $R_PSMP_HOST:$port)"
     else
-        info "Cible : $target_user @ $target_host (via $R_PSMP_HOST:$port)"
+        info "Target: $target_user @ $target_host (via $R_PSMP_HOST:$port)"
     fi
 
-    # Vault password : inutile si auth par clé SSH (agent actif avec clés chargées)
+    # Vault password: not needed with SSH key auth (agent running with loaded keys)
     local vault_pass="" target_pass=""
     local original_target="${target_user}@${original_host}"
     local resolved_target="${target_user}@${target_host}"
-    debug "Vérification ssh-agent"
+    debug "Checking ssh-agent"
     if ssh-add -l >/dev/null 2>&1; then
-        info "Mode clé SSH (agent actif, clés chargées)"
+        info "SSH key mode (agent running, keys loaded)"
     else
-        debug "Pas de clé SSH, fetch vault password"
+        debug "No SSH key, fetching the vault password"
         vault_pass=$(fetch_password "$VAULT_PASS_ENTRY" 1) || true
         if [[ -n "$vault_pass" ]]; then
-            info "Mode password (vault password depuis KeePassXC)"
+            info "Password mode (vault password from KeePassXC)"
         else
-            # Clés SSH présentes mais non chargées → erreur actionnable
+            # SSH keys present but not loaded → actionable error
             local unloaded_keys
             unloaded_keys=$(find ~/.ssh -maxdepth 1 -name "id_*" ! -name "*.pub" 2>/dev/null)
             if [[ -n "$unloaded_keys" ]]; then
-                err "Clés SSH trouvées mais non chargées dans l'agent :"
+                err "SSH keys found but not loaded in the agent:"
                 while IFS= read -r kf; do err "  - $kf"; done <<< "$unloaded_keys"
-                err "Charge-les d'abord : ssh-add"
+                err "Load them first: ssh-add"
                 exit 2
             fi
-            warn "Pas de vault password et ssh-agent sans clé chargée"
-            warn "Si le PSMP demande un vault password, la connexion échouera"
+            warn "No vault password, and ssh-agent has no key loaded"
+            warn "If the PSMP asks for a vault password, the connection will fail"
         fi
     fi
 
-    # Target password : obligatoire
-    # Ordre de lookup — dépend de si target_user est un compte LDAP connu (LDAP_USER)
-    #   LDAP connu     : user → user@ip → user@hostname  (entrée unique, même passwd partout)
-    #   Compte service : user@ip → user@hostname → user  (spécifique avant générique)
+    # Target password: required
+    # Lookup order — depends on whether target_user is a known LDAP account (LDAP_USER)
+    #   Known LDAP account: user → user@ip → user@hostname  (single entry, same password everywhere)
+    #   Service account   : user@ip → user@hostname → user  (specific before generic)
     local is_ldap=0 u
     for u in $LDAP_USER; do
         if [[ "$target_user" == "$u" ]]; then
@@ -398,7 +398,7 @@ resolve_target() {
 
     local lookup_names=()
     if (( is_ldap )); then
-        debug "User '$target_user' identifié comme compte LDAP (via LDAP_USER)"
+        debug "User '$target_user' identified as an LDAP account (via LDAP_USER)"
         lookup_names=("$target_user")
         if [[ "$resolved_target" != "$original_target" ]]; then
             lookup_names+=("$resolved_target" "$original_target")
@@ -413,7 +413,7 @@ resolve_target() {
         fi
     fi
 
-    info "Recherche du password target dans KeePassXC..."
+    info "Looking up the target password in KeePassXC..."
     local found_name=""
     for name in "${lookup_names[@]}"; do
         debug "Lookup '$name'"
@@ -425,17 +425,17 @@ resolve_target() {
     done
 
     if [[ -z "$target_pass" ]]; then
-        err "Aucune entrée KeePassXC trouvée pour '$target_user'"
-        err "Noms essayés :"
+        err "No KeePassXC entry found for '$target_user'"
+        err "Names tried:"
         for name in "${lookup_names[@]}"; do
             err "  - $KDBX_GROUP/$name"
         done
-        err "Crée une entrée avec un de ces Titles dans le groupe '$KDBX_GROUP'"
+        err "Create an entry with one of these Titles in group '$KDBX_GROUP'"
         exit 3
     fi
-    info "Password trouvé (entrée : $KDBX_GROUP/$found_name)"
+    info "Password found (entry: $KDBX_GROUP/$found_name)"
 
-    # Construction de la string de connexion CyberArk (IP résolue pour le PSMP)
+    # Build the CyberArk connection string (resolved IP for the PSMP)
     R_TARGET_USER="$target_user"
     R_TARGET_HOST="$target_host"
     R_ORIGINAL_HOST="$original_host"
@@ -446,9 +446,9 @@ resolve_target() {
 }
 
 # =============================================================================
-# Préambule expect commun aux 3 modes : auth vault (optionnelle) → target.
-# $1 = ligne `spawn` complète (syntaxe Tcl ; \$env(...) littéral).
-# Émet le script sur stdout.
+# Expect preamble shared by the 3 modes: vault auth (optional) → target.
+# $1 = full `spawn` line (Tcl syntax; literal \$env(...)).
+# Writes the script to stdout.
 # =============================================================================
 emit_auth_preamble() {
     local spawn_line="$1"
@@ -458,11 +458,11 @@ emit_auth_preamble() {
         exp_debug=1
     fi
 
-    # Convention d'escaping (heredoc NON quoté <<EXPECT_EOF) :
-    #   $var   → expandé par bash   ($spawn_line, $EXPECT_TIMEOUT, $VAULT_PASS_ENTRY)
-    #   \$var  → littéral pour Tcl  ($env(CONN_STR/VAULT_PASS/TARGET_PASS), ${c_red})
-    #   \[..\] et \033 → littéral pour Tcl (évite command-substitution / expansion)
-    # Les secrets ne passent que par $env(...), jamais sur la ligne de commande.
+    # Escaping convention (NON-quoted heredoc <<EXPECT_EOF):
+    #   $var   → expanded by bash   ($spawn_line, $EXPECT_TIMEOUT, $VAULT_PASS_ENTRY)
+    #   \$var  → literal for Tcl    ($env(CONN_STR/VAULT_PASS/TARGET_PASS), ${c_red})
+    #   \[..\] and \033 → literal for Tcl (prevents command substitution / expansion)
+    # Secrets only go through $env(...), never on the command line.
     cat <<EXPECT_EOF
         log_user $log_init
         exp_internal $exp_debug
@@ -476,14 +476,14 @@ emit_auth_preamble() {
 
         expect {
             -re {(?i)enter passphrase for} {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Passphrase SSH demandée — clé non chargée dans l'agent\n"
-                send_user "\${c_ylw}\[WARN\]\${c_rst} Charge ta clé d'abord : ssh-add\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} SSH passphrase requested — key not loaded in the agent\n"
+                send_user "\${c_ylw}\[WARN\]\${c_rst} Load your key first: ssh-add\n"
                 exit 14
             }
             -re {(?i)vault password\s*:\s*\$} {
                 if {\$env(VAULT_PASS) eq ""} {
-                    send_user "\n\${c_red}\[ERR\]\${c_rst} Vault password demandé mais aucun disponible\n"
-                    send_user "\${c_ylw}\[WARN\]\${c_rst} Configure l'entrée '$VAULT_PASS_ENTRY' dans KeePassXC ou utilise une clé SSH\n"
+                    send_user "\n\${c_red}\[ERR\]\${c_rst} Vault password requested but none available\n"
+                    send_user "\${c_ylw}\[WARN\]\${c_rst} Set up the '$VAULT_PASS_ENTRY' entry in KeePassXC or use an SSH key\n"
                     exit 10
                 }
                 log_user 1
@@ -491,26 +491,26 @@ emit_auth_preamble() {
 
                 expect {
                     -re {(?i)vault password\s*:\s*\$} {
-                        send_user "\n\${c_red}\[ERR\]\${c_rst} Authentification vault échouée (mauvais VaultPassword)\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Vault authentication failed (wrong VaultPassword)\n"
                         exit 20
                     }
                     -re {(?i)(otp|one-time password|mfa code)\s*:\s*\$} {
-                        send_user "\n\${c_red}\[ERR\]\${c_rst} MFA détecté — non supporté par ce script\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} MFA detected — not supported by this script\n"
                         exit 21
                     }
                     -re {(?i)permission denied} {
-                        send_user "\n\${c_red}\[ERR\]\${c_rst} Permission refusée après vault password\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Permission denied after the vault password\n"
                         exit 22
                     }
                     -re {(?i)password\s*:\s*\$} {
                         send -- "\$env(TARGET_PASS)\r"
                     }
                     timeout {
-                        send_user "\n\${c_red}\[ERR\]\${c_rst} Timeout en attendant le prompt target\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Timeout waiting for the target prompt\n"
                         exit 23
                     }
                     eof {
-                        send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée avant prompt target\n"
+                        send_user "\n\${c_red}\[ERR\]\${c_rst} Connection closed before the target prompt\n"
                         exit 24
                     }
                 }
@@ -520,15 +520,15 @@ emit_auth_preamble() {
                 send -- "\$env(TARGET_PASS)\r"
             }
             -re {(?i)permission denied} {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Permission refusée (clé SSH rejetée ?)\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Permission denied (SSH key rejected?)\n"
                 exit 13
             }
             timeout {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Timeout en attendant un prompt d'authentification\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Timeout waiting for an authentication prompt\n"
                 exit 11
             }
             eof {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée avant authentification\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Connection closed before authentication\n"
                 exit 12
             }
         }
@@ -536,7 +536,7 @@ EXPECT_EOF
 }
 
 # =============================================================================
-# Connexion SSH interactive via expect (préambule commun + interact auto-sudo)
+# Interactive SSH connection via expect (shared preamble + auto-sudo interact)
 # =============================================================================
 run_shell() {
     local target="$1" port="$2"
@@ -548,13 +548,13 @@ run_shell() {
     debug "Spawn: ssh -p $port $SSH_OPTS $R_CONN_STR"
 
     if [[ "${DEBUG:-0}" == 1 ]]; then
-        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
+        warn "Debug mode: passwords will be visible in the expect output"
     fi
 
     if [[ "${AUTO_SUDO:-1}" == 1 ]]; then
-        info "Auto-sudo actif (le mot de passe target répond aux prompts [sudo])"
+        info "Auto-sudo on (the target password answers [sudo] prompts)"
     else
-        info "Auto-sudo désactivé — sudo manuel"
+        info "Auto-sudo off — manual sudo"
     fi
 
     local rc=0 expect_script
@@ -568,15 +568,15 @@ run_shell() {
         set timeout 3
         expect {
             -re {(?i)permission denied} {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Authentification target échouée\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Target authentication failed\n"
                 exit 30
             }
             -re {(?i)password\s*:\s*\$} {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Re-prompt target → mauvais TARGET_PASS\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Target re-prompt → wrong TARGET_PASS\n"
                 exit 31
             }
             eof {
-                send_user "\n\${c_red}\[ERR\]\${c_rst} Connexion fermée après auth target\n"
+                send_user "\n\${c_red}\[ERR\]\${c_rst} Connection closed after target auth\n"
                 exit 32
             }
             timeout {}
@@ -585,8 +585,8 @@ run_shell() {
 
         set timeout -1
 EXPECT_EOF
-        # Hook auto-sudo conditionnel : AUTO_SUDO=1 répond aux prompts [sudo]
-        # avec le target password ; AUTO_SUDO=0 → interact nu (sudo manuel).
+        # Conditional auto-sudo hook: AUTO_SUDO=1 answers [sudo] prompts with
+        # the target password; AUTO_SUDO=0 → bare interact (manual sudo).
         if [[ "${AUTO_SUDO:-1}" == 1 ]]; then
             cat <<EXPECT_EOF
         interact -o -re {\[sudo\] [Pp]assword[^:]*:} {
@@ -605,9 +605,9 @@ EXPECT_EOF
 }
 
 # =============================================================================
-# Queue expect commune aux modes non-interactifs (exec, scp) : affiche la
-# sortie du process spawné puis propage son code retour. Heredoc quoté
-# (<<'EXPECT_EOF') : uniquement du Tcl littéral, aucune expansion bash.
+# Expect tail shared by the non-interactive modes (exec, scp): shows the
+# output of the spawned process, then propagates its exit code. Quoted
+# heredoc (<<'EXPECT_EOF'): literal Tcl only, no bash expansion.
 # =============================================================================
 emit_noninteractive_tail() {
     cat <<'EXPECT_EOF'
@@ -621,9 +621,9 @@ EXPECT_EOF
 }
 
 # =============================================================================
-# Exécution non-interactive d'une commande distante (façon `ssh host "cmd"`).
-# La commande passe par $env(REMOTE_CMD) : un seul mot Tcl, transmis tel quel
-# au shell distant, sans substitution/backslash Tcl.
+# Non-interactive execution of a remote command (like `ssh host "cmd"`).
+# The command goes through $env(REMOTE_CMD): a single Tcl word, passed as is
+# to the remote shell, with no Tcl substitution or backslash processing.
 # =============================================================================
 run_exec() {
     local target="$1" port="$2" remote_cmd="$3"
@@ -634,10 +634,10 @@ run_exec() {
     export CONN_STR="$R_CONN_STR"
     export REMOTE_CMD="$remote_cmd"
     debug "Spawn: ssh -p $port $SSH_OPTS $R_CONN_STR $remote_cmd"
-    info "Exécution : $remote_cmd"
+    info "Running: $remote_cmd"
 
     if [[ "${DEBUG:-0}" == 1 ]]; then
-        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
+        warn "Debug mode: passwords will be visible in the expect output"
     fi
 
     local rc=0 expect_script
@@ -653,28 +653,28 @@ run_exec() {
 }
 
 # =============================================================================
-# Transfert de fichiers via scp à travers le PSMP.
-# Args = arguments bruts après `cp` (flags scp + chemins + un remote spec).
+# File transfer via scp through the PSMP.
+# Args = raw arguments after `cp` (scp flags + paths + one remote spec).
 # =============================================================================
 run_scp() {
     parse_scp_args "$@" || exit $?
 
     resolve_target "$PSA_REMOTE_HOST" "$PORT"
-    # Réécrit l'unique remote spec avec la conn_str CyberArk (IP résolue).
+    # Rewrite the single remote spec with the CyberArk conn_str (resolved IP).
     PSA_ARGV[$PSA_REMOTE_INDEX]="${R_CONN_STR}:${PSA_REMOTE_PATH}"
 
     export VAULT_PASS="$R_VAULT_PASS"
     export TARGET_PASS="$R_TARGET_PASS"
     debug "Spawn: scp -P $PORT $SSH_OPTS ${PSA_ARGV[*]}"
-    info "Transfert scp via $R_PSMP_HOST"
+    info "scp transfer via $R_PSMP_HOST"
 
     if [[ "${DEBUG:-0}" == 1 ]]; then
-        warn "Mode debug : les mots de passe seront visibles dans la sortie expect"
+        warn "Debug mode: passwords will be visible in the expect output"
     fi
 
     local rc=0 expect_script
     expect_script=$(mktemp /tmp/psm-expect.XXXXXX)
-    # {*}$argv : expansion Tcl des arguments scp (passés via -- ci-dessous).
+    # {*}$argv: Tcl expansion of the scp arguments (passed after -- below).
     local spawn_line="spawn -noecho scp -P $PORT $SSH_OPTS {*}\$argv"
 
     { emit_auth_preamble "$spawn_line"; emit_noninteractive_tail; } > "$expect_script"
@@ -686,7 +686,7 @@ run_scp() {
 }
 
 # =============================================================================
-# Point d'entrée
+# Entry point
 # =============================================================================
 main() {
     DEBUG=0
@@ -701,15 +701,15 @@ main() {
             p) PORT="$OPTARG" ;;
             v) VAULT_USER="$OPTARG" ;;
             h) usage; exit 0 ;;
-            \?) err "Option inconnue : -$OPTARG"; usage; exit 2 ;;
-            :)  err "Option -$OPTARG requiert un argument"; exit 2 ;;
+            \?) err "Unknown option: -$OPTARG"; usage; exit 2 ;;
+            :)  err "Option -$OPTARG requires an argument"; exit 2 ;;
         esac
     done
     shift $((OPTIND - 1))
 
-    # Détection de secrets résiduels (nettoyage raté d'une session précédente)
+    # Leftover secrets detection (cleanup of a previous session failed)
     if [[ -n "${VAULT_PASS:-}" || -n "${TARGET_PASS:-}" ]]; then
-        warn "Secrets résiduels détectés dans l'environnement (session précédente mal terminée) — purge"
+        warn "Leftover secrets found in the environment (previous session did not exit cleanly) — purging"
         unset VAULT_PASS TARGET_PASS
     fi
 
@@ -721,21 +721,21 @@ main() {
     fi
 
     if (( $# < 1 )); then
-        err "Argument manquant : <targetuser@targethost> [commande]"
+        err "Missing argument: <targetuser@targethost> [command]"
         usage
         exit 2
     fi
 
-    # Validation port
+    # Port validation
     if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
-        err "Port invalide : $PORT"
+        err "Invalid port: $PORT"
         exit 2
     fi
 
     if [[ "$1" == "cp" ]]; then
         shift
         if (( $# < 2 )); then
-            err "Usage : psm cp [flags] SRC... DST"
+            err "Usage: psm cp [flags] SRC... DST"
             exit 2
         fi
         run_scp "$@"
@@ -746,11 +746,11 @@ main() {
     if (( $# > 0 )); then
         run_exec "$target" "$PORT" "$*"       # psm host "cmd..."
     else
-        run_shell "$target" "$PORT"           # psm host  (shell interactif)
+        run_shell "$target" "$PORT"           # psm host  (interactive shell)
     fi
 }
 
-# N'exécute main que si le script est lancé directement (pas sourcé par les tests)
+# Only run main when the script is executed directly (not when sourced by the tests)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
