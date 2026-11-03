@@ -1,23 +1,23 @@
-# Patterns interdits pour le hook pre-commit.
+# Forbidden patterns for the pre-commit hook.
 #
-# Copier vers patterns.local (gitignore) et adapter avec tes valeurs réelles.
-# Une ligne = un pattern (regex étendue, insensible à la casse).
-# Les lignes vides et celles commencant par # sont ignorées.
+# Copy to patterns.local (gitignored) and adapt with your real values.
+# One line = one pattern (extended regex, case-insensitive).
+# Blank lines and lines starting with # are ignored.
 #
-# Exemples génériques (à remplacer par tes patterns internes) :
+# Generic examples (replace them with your internal patterns):
 
-# Domaines internes de ton entreprise
+# Internal domains of your company
 # mycompany\.local
 # internal\.example\.com
 
-# Formats d'identifiants employés / utilisateurs
+# Employee / user ID formats
 # \b[A-Z][0-9]{6,}\b
 
-# Plages IP privées utilisées en interne
+# Private IP ranges used internally
 # \b10\.[0-9]+\.[0-9]+\.[0-9]+\b
 
-# Préfixes de hostnames internes
+# Internal hostname prefixes
 # \b(prod|staging)-srv[0-9]+\b
 
-# Noms de services spécifiques
+# Specific service names
 # internal-bastion

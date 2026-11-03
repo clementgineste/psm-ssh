@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Pre-commit hook : bloque les commits contenant des patterns interdits.
+# Pre-commit hook: blocks commits that contain forbidden patterns.
 #
-# Les patterns sont chargés depuis un fichier LOCAL (gitignoré) :
+# The patterns are loaded from a LOCAL (gitignored) file:
 #   .githooks/patterns.local
 #
-# Cette liste contient des infos sensibles propres à ton environnement
-# (domaines internes, formats d'identifiants, hostnames, etc.) et ne doit
-# JAMAIS être committée.
+# This list holds sensitive values specific to your environment
+# (internal domains, ID formats, hostnames, etc.) and must
+# NEVER be committed.
 #
-# Installation :
+# Setup:
 #   1. git config core.hooksPath .githooks
 #   2. cp .githooks/patterns.example .githooks/patterns.local
-#   3. Éditer patterns.local avec tes patterns réels
+#   3. Edit patterns.local with your real patterns
 
 set -eu
 
@@ -19,15 +19,15 @@ HOOK_DIR="$(git rev-parse --show-toplevel)/.githooks"
 PATTERNS_FILE="$HOOK_DIR/patterns.local"
 
 if [[ ! -f "$PATTERNS_FILE" ]]; then
-    # Pas de patterns locaux définis — hook inopérant, on laisse passer
+    # No local patterns defined — hook inactive, let the commit through
     exit 0
 fi
 
-# Charge les patterns (une ligne par pattern, ignore commentaires et lignes vides)
+# Load the patterns (one per line, comments and blank lines ignored)
 mapfile -t FORBIDDEN_PATTERNS < <(grep -vE '^\s*(#|$)' "$PATTERNS_FILE")
 [[ ${#FORBIDDEN_PATTERNS[@]} -eq 0 ]] && exit 0
 
-# Ne scanne que les fichiers staged, exclut .githooks/ lui-même
+# Only scan staged files, excluding .githooks/ itself
 staged=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^\.githooks/' || true)
 [[ -z "$staged" ]] && exit 0
 
@@ -35,7 +35,7 @@ violation=0
 for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
     if matches=$(git diff --cached -U0 -- $staged | grep -iEnH "^\+.*$pattern" 2>/dev/null); then
         if [[ -n "$matches" ]]; then
-            echo "Pattern interdit detecte : $pattern" >&2
+            echo "Forbidden pattern detected: $pattern" >&2
             echo "$matches" | head -5 >&2
             echo "" >&2
             violation=1
@@ -45,10 +45,10 @@ done
 
 if (( violation )); then
     echo "=======================================================================" >&2
-    echo "Commit bloque : patterns interdits detectes dans les changements staged." >&2
-    echo "Retire les valeurs ci-dessus ou remplace par des placeholders generiques." >&2
+    echo "Commit blocked: forbidden patterns detected in the staged changes." >&2
+    echo "Remove the values above or replace them with generic placeholders." >&2
     echo "" >&2
-    echo "Bypass (exceptionnel) : git commit --no-verify" >&2
+    echo "Bypass (exceptional): git commit --no-verify" >&2
     echo "=======================================================================" >&2
     exit 1
 fi

@@ -1,16 +1,16 @@
-# Autocomplétion bash pour psm
-# Complète les flags et les hostnames depuis ~/.ssh/config
+# Bash completion for psm
+# Completes flags, hostnames from ~/.ssh/config, and local paths for `psm cp`
 #
-# Installation :
-#   source ~/psm-ssh/completions/psm.bash        (dans ~/.bashrc)
-#   OU
+# Installation:
+#   source ~/psm-ssh/completions/psm.bash        (in ~/.bashrc)
+#   OR
 #   sudo cp completions/psm.bash /etc/bash_completion.d/psm
 
 _psm_complete() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    # Flag -p attend un argument (port) → pas de complétion
+    # -p and -v take a value (port, vault user) → no completion
     if [[ "$prev" == -*[pv] ]]; then
         return
     fi
@@ -21,8 +21,8 @@ _psm_complete() {
         return
     fi
 
-    # Index du premier argument non-flag (saute les flags et la valeur de
-    # -p/-v, y compris groupés : -dp 2222) → détecte `cp` après des flags.
+    # Index of the first non-flag argument (skips flags and the value of
+    # -p/-v, grouped ones included: -dp 2222) → detects `cp` after flags.
     local i cmd_idx=0
     for (( i = 1; i < COMP_CWORD; i++ )); do
         case "${COMP_WORDS[i]}" in
@@ -32,7 +32,7 @@ _psm_complete() {
         esac
     done
 
-    # Sous-commande cp : compléter fichiers locaux + hostnames
+    # cp subcommand: complete local paths + hostnames
     if (( cmd_idx > 0 )) && [[ "${COMP_WORDS[cmd_idx]}" == "cp" ]]; then
         local hosts_cp
         hosts_cp=$(awk '/^[Hh]ost / && !/[*?]/ {for(i=2;i<=NF;i++) print $i}' \
@@ -41,7 +41,7 @@ _psm_complete() {
             local prefix="${cur%@*}@" partial="${cur#*@}"
             COMPREPLY=( $(compgen -P "$prefix" -W "$hosts_cp" -- "$partial") )
         else
-            # Chemins locaux (descente dans les sous-dossiers) + hostnames connus.
+            # Local paths (descends into subdirectories) + known hostnames.
             if declare -F _filedir >/dev/null 2>&1; then
                 _filedir
             else
@@ -53,7 +53,7 @@ _psm_complete() {
         return
     fi
 
-    # Hostnames depuis ~/.ssh/config (exclut les wildcards * ?)
+    # Hostnames from ~/.ssh/config (wildcards * ? excluded)
     local hosts
     hosts=$(awk '/^[Hh]ost / && !/[*?]/ {for(i=2;i<=NF;i++) print $i}' \
             ~/.ssh/config 2>/dev/null)
