@@ -93,31 +93,70 @@ gpg --version
 WSL2 kills the parent process whenever a terminal is closed, so
 `ssh-agent` dies with it. Three options, in order of preference:
 
-### Option A — systemd user unit (recommended, clean)
+### Option A — systemd user agent (recommended)
+
+Many distros already ship a user agent that systemd starts on demand
+(`ssh-agent.socket`). Check first:
+
+```bash
+systemctl --user show ssh-agent.socket -P Listen
+```
+
+- It prints a path, for example `/run/user/1000/openssh_agent (Stream)`
+  on Ubuntu or `/run/user/1000/ssh-agent.socket (Stream)` on Fedora:
+  follow **A1**.
+- It prints nothing: follow **A2**.
+
+#### A1 — use the distro agent
+
+```bash
+systemctl --user enable --now ssh-agent.socket
+```
+
+Then export the socket path in `~/.bashrc` (or `~/.zshrc`), using the file
+name printed by the check above:
+
+```bash
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/openssh_agent"    # Fedora: ssh-agent.socket
+```
+
+> Do not create a `~/.config/systemd/user/ssh-agent.service` on top of it.
+> It hides the distro unit of the same name, but `ssh-agent.socket` still
+> starts the agent, without your `-a`. `SSH_AUTH_SOCK` can then point to a
+> file that does not exist, and `ssh-add -l` fails with
+> `Error connecting to agent: No such file or directory`.
+
+#### A2 — no distro agent: custom unit
+
+Give the unit its own name, so that it cannot hide a distro unit added by
+a later upgrade:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/ssh-agent.service <<'EOF'
+cat > ~/.config/systemd/user/psm-ssh-agent.service <<'EOF'
 [Unit]
-Description=SSH authentication agent
+Description=SSH authentication agent (psm)
 
 [Service]
 Type=simple
-Environment=SSH_AUTH_SOCK=%t/ssh-agent.socket
+Environment=SSH_AUTH_SOCK=%t/psm-ssh-agent.sock
 ExecStart=/usr/bin/ssh-agent -D -a $SSH_AUTH_SOCK
 
 [Install]
 WantedBy=default.target
 EOF
 
-systemctl --user enable --now ssh-agent
+systemctl --user daemon-reload
+systemctl --user enable --now psm-ssh-agent
 ```
 
 Then export the variable in `~/.bashrc` (or `~/.zshrc`):
 
 ```bash
-export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/psm-ssh-agent.sock"
 ```
+
+#### Load the key
 
 Reload the shell, then:
 
@@ -127,8 +166,21 @@ ssh-add -l                     # should list the key
 ```
 
 The key stays loaded until WSL2 reboots. To reload it automatically at
-boot, see [`keychain`](https://www.funtoo.org/Keychain) or an
-ExecStartPost in the systemd unit.
+boot, see [`keychain`](https://www.funtoo.org/Keychain).
+
+#### Migrating from an older version of this guide
+
+Older versions of this guide created `~/.config/systemd/user/ssh-agent.service`.
+If the check above prints a path, remove that unit and switch to A1:
+
+```bash
+systemctl --user disable --now ssh-agent.service
+rm ~/.config/systemd/user/ssh-agent.service
+systemctl --user daemon-reload
+systemctl --user restart ssh-agent.socket
+```
+
+Then follow A1: enable the socket and fix `SSH_AUTH_SOCK` in `~/.bashrc`.
 
 ### Option B — start from `~/.bashrc` (simple, no systemd)
 
@@ -428,6 +480,21 @@ Expected output:
 ### `ssh-add -l` → "Could not open a connection to your authentication agent"
 
 `SSH_AUTH_SOCK` is not exported. Restart the shell or run `source ~/.bashrc`.
+
+### `ssh-add -l` → "Error connecting to agent: No such file or directory"
+
+`SSH_AUTH_SOCK` points to a socket that does not exist. Compare it with the
+path the agent really listens on:
+
+```bash
+echo "$SSH_AUTH_SOCK"
+systemctl --user show ssh-agent.socket -P Listen
+```
+
+If they differ and `~/.config/systemd/user/ssh-agent.service` exists, a
+custom unit is hiding the distro agent: see "Migrating from an older
+version of this guide" in section 3. With A2, check
+`systemctl --user status psm-ssh-agent`.
 
 ### `gpg: decryption failed: No secret key`
 
