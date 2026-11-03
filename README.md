@@ -1,164 +1,169 @@
 # psm-ssh
 
-SSH wrapper pour CyberArk PSM for SSH (PSMP) avec récupération automatique
-des credentials depuis KeePassXC.
+SSH wrapper for CyberArk PSM for SSH (PSMP) that retrieves credentials
+automatically from KeePassXC.
 
-## Pourquoi
+## Why
 
-CyberArk PSMP intercepte les connexions SSH avec un ou deux prompts :
+CyberArk PSMP intercepts SSH connections with one or two prompts:
 
 ```
 ssh vaultuser@targetuser@targethost@psmphost
-  → Vault Password:    (CyberArk vault — absent si auth par clé SSH)
-  → Password:          (compte cible)
+  → Vault Password:    (CyberArk vault — skipped with SSH key auth)
+  → Password:          (target account)
 ```
 
-Le PSMP utilise `keyboard-interactive`, donc `sshpass` ne marche pas. Ce
-script utilise `expect` pour piloter l'auth, et tire les mots de passe
-depuis KeePassXC — aucun secret en clair, aucun mot de passe sur la cmdline.
+The PSMP uses `keyboard-interactive`, so `sshpass` does not work. This
+script drives the authentication with `expect` and pulls the passwords from
+KeePassXC: no plaintext secret, no password on the command line.
 
-**Deux modes d'auth vault** sont supportés :
-- **Clé SSH** (recommandé) : si l'agent SSH a des clés chargées, l'auth vault
-  est transparente. Seul le password target est nécessaire.
-- **Password** : le script récupère aussi le vault password depuis KeePassXC.
+**Two vault auth modes** are supported:
+- **SSH key** (recommended): if the SSH agent has keys loaded, vault auth is
+  transparent. Only the target password is needed.
+- **Password**: the script also retrieves the vault password from KeePassXC.
 
-**Deux backends de credentials** sont supportés :
-- **Secret Service API** (`secret-tool`) : KeePassXC GUI déverrouillé avec
-  intégration Secret Service activée.
-- **keepassxc-cli + GPG** : master password chiffré par GPG, déchiffré via
-  `gpg-agent` (cache la passphrase). Pas besoin de GUI.
+**Two credential backends** are supported:
+- **Secret Service API** (`secret-tool`): KeePassXC GUI unlocked, with
+  Secret Service integration enabled.
+- **keepassxc-cli + GPG**: master password encrypted with GPG, decrypted
+  through `gpg-agent` (which caches the passphrase). No GUI needed.
 
-Au moins un des deux backends doit être disponible.
+At least one of the two backends must be available.
 
-## Dépendances
+## Dependencies
 
-| Paquet              | Rôle                                       | Obligatoire |
-|---------------------|--------------------------------------------|-------------|
-| `expect`            | Pilotage de l'auth keyboard-interactive    | oui         |
-| `openssh-client`    | Client SSH                                  | oui         |
-| `libsecret-tools`   | `secret-tool` pour Secret Service API      | un des deux |
-| `keepassxc-cli`     | Accès CLI à la base KeePassXC              | un des deux |
-| `gpg`               | Déchiffrement du master password           | pour mode GPG |
-| `keepassxc`         | GUI + Secret Service                       | pour mode GUI |
+| Package             | Role                                        | Required        |
+|---------------------|---------------------------------------------|-----------------|
+| `expect`            | Drives the keyboard-interactive auth        | yes             |
+| `openssh-client`    | SSH client                                  | yes             |
+| `libsecret-tools`   | `secret-tool` for the Secret Service API    | one of the two  |
+| `keepassxc-cli`     | CLI access to the KeePassXC database        | one of the two  |
+| `gpg`               | Decrypts the master password                | for GPG mode    |
+| `keepassxc`         | GUI + Secret Service                        | for GUI mode    |
 
 ```bash
-# Debian/Ubuntu — mode GUI (Secret Service)
+# Debian/Ubuntu — GUI mode (Secret Service)
 sudo apt install expect openssh-client libsecret-tools keepassxc
 
-# Debian/Ubuntu — mode CLI (GPG)
-sudo apt install expect openssh-client keepassxc2 gnupg
+# Debian/Ubuntu — CLI mode (GPG)
+sudo apt install expect openssh-client keepassxc gnupg
 
-# RHEL/Fedora — mode GUI
+# RHEL/Fedora — GUI mode
 sudo dnf install expect openssh-clients libsecret keepassxc
 
-# RHEL/Fedora — mode CLI (GPG)
+# RHEL/Fedora — CLI mode (GPG)
 sudo dnf install expect openssh-clients keepassxc gnupg2
 ```
 
 ## Setup
 
-### Mode Secret Service (GUI)
+### Secret Service mode (GUI)
 
-1. Ouvrir KeePassXC → **Settings → Secret Service Integration** → cocher *Enable*
-2. Dans la base, créer un groupe (par défaut `PSM/`)
-3. **Settings de la base → Secret Service Integration** → exposer le groupe `PSM`
-4. Créer les entrées (voir structure ci-dessous)
+1. Open KeePassXC → **Settings → Secret Service Integration** → check *Enable*
+2. In the database, create a group (`PSM/` by default)
+3. **Database settings → Secret Service Integration** → expose the `PSM` group
+4. Create the entries (see the structure below)
 
-La base doit être **déverrouillée** dans le GUI pendant l'usage du script.
+The database must stay **unlocked** in the GUI while you use the script.
 
-Vérification rapide :
-
-```bash
-secret-tool lookup Title admin@srv-prod01     # doit afficher le mot de passe target
-```
-
-### Mode GPG + keepassxc-cli (sans GUI)
-
-1. Créer la base KeePassXC et les entrées (voir structure ci-dessous)
-2. Chiffrer le master password de la base avec GPG :
+Quick check:
 
 ```bash
-echo -n "ton-master-password" | gpg --encrypt --recipient ton@email.com -o ~/.psm-master.gpg
+secret-tool lookup Title admin@srv-prod01     # must print the target password
 ```
 
-3. Vérifier que `gpg-agent` fonctionne et cache la passphrase :
+### GPG + keepassxc-cli mode (no GUI)
+
+1. Create the KeePassXC database and the entries (see the structure below)
+2. Encrypt the database master password with GPG (the prompt keeps it out of
+   your shell history):
+
+```bash
+printf 'KeePassXC master password: '; read -rs pw; echo
+printf '%s' "$pw" | gpg --encrypt --recipient you@example.com -o ~/.psm-master.gpg
+unset pw
+```
+
+3. Check that `gpg-agent` works and caches the passphrase:
 
 ```bash
 gpg -qd ~/.psm-master.gpg | keepassxc-cli show -qsa Password ~/Passwords.kdbx PSM/admin@srv-prod01
 ```
 
-La première invocation demande la passphrase GPG. Les suivantes utilisent le
-cache `gpg-agent` (configurable via `~/.gnupg/gpg-agent.conf`).
+The first call asks for the GPG passphrase. The following ones use the
+`gpg-agent` cache (configurable in `~/.gnupg/gpg-agent.conf`).
 
-### Structure des entrées KeePassXC
+### KeePassXC entry layout
 
 ```
 PSM/
-├── VaultPassword              ← Title="VaultPassword",  Password=<vault pwd>  (optionnel si clé SSH)
-├── admin@srv-prod01           ← Title="admin@srv-prod01", compte de service spécifique
-├── admin@10.2.2.3             ← Title="admin@10.2.2.3",    compte de service par IP
+├── VaultPassword              ← Title="VaultPassword",    Password=<vault pwd>  (optional with an SSH key)
+├── admin@srv-prod01           ← Title="admin@srv-prod01", host-specific service account
+├── admin@10.2.2.3             ← Title="admin@10.2.2.3",   service account by IP
 ├── root@srv-prod02
-└── john.doe                  ← Title="john.doe",         compte LDAP, même mot de passe partout
+└── john.doe                   ← Title="john.doe",         LDAP account, same password everywhere
 ```
 
-L'entrée `VaultPassword` est **optionnelle** si tu utilises l'auth vault par clé SSH.
+The `VaultPassword` entry is **optional** if you use SSH key vault auth.
 
-**Convention de lookup** — l'ordre dépend de si le user est déclaré dans `LDAP_USER` :
+**Lookup convention** — the order depends on whether the user is listed in `LDAP_USER`:
 
-**Compte de service** (user **pas** dans `LDAP_USER`) — spécifique avant générique :
-1. `user@ip` — si le hostname a été résolu en IP
-2. `user@hostname` — nom original
+**Service account** (user **not** in `LDAP_USER`) — specific before generic:
+1. `user@ip` — if the hostname was resolved to an IP
+2. `user@hostname` — original name
 3. `user` — fallback
 
-**Compte LDAP/AD** (user dans `LDAP_USER`) — générique avant spécifique :
-1. `user` — entrée unique partagée entre tous les serveurs
+**LDAP/AD account** (user in `LDAP_USER`) — generic before specific:
+1. `user` — single entry shared by all servers
 2. `user@ip` — fallback
 3. `user@hostname` — fallback
 
-Le premier match gagne. Pour les comptes LDAP où le même mot de passe marche sur
-tous les serveurs, crée une seule entrée nommée par l'user (`john.doe`) et
-déclare-le dans `LDAP_USER` — une seule recherche KeePassXC suffit à chaque
-connexion.
+The first match wins. For LDAP accounts whose password is the same on every
+server, create a single entry named after the user (`john.doe`) and list it
+in `LDAP_USER`: a single KeePassXC lookup is then enough for each connection.
 
 ## Installation
 
-Pour **WSL2** (setup complet avec ssh-agent, gpg-agent, KeePassXC CLI),
-voir [`docs/WSL2-SETUP.md`](docs/WSL2-SETUP.md) — guide pas-à-pas.
+For **WSL2** (full setup with ssh-agent, gpg-agent and KeePassXC CLI), see
+[`docs/WSL2-SETUP.md`](docs/WSL2-SETUP.md), a step-by-step guide.
 
-Pour les autres environnements :
+Other environments:
 
 ```bash
 git clone https://github.com/clementgineste/psm-ssh.git
 cd psm-ssh
 chmod +x psm
 sudo install -m 755 psm /usr/local/bin/psm
-
-# Activer les hooks git (pre-commit + commit-msg)
-git config core.hooksPath .githooks
-cp .githooks/patterns.example .githooks/patterns.local
-$EDITOR .githooks/patterns.local   # Ajouter tes patterns internes (hostnames, IPs, user IDs)
 ```
 
-Deux hooks sont fournis dans `.githooks/` :
-- **`pre-commit`** : bloque les commits contenant des strings internes (patterns
-  définis dans `patterns.local`, gitignoré).
-- **`commit-msg`** : impose le format [Conventional Commits](https://www.conventionalcommits.org/)
-  (`feat:`, `fix:`, `docs:`, etc.).
+Or just add the repo to your `PATH`.
 
-Le fichier `patterns.local` est gitignoré — il contient tes patterns sensibles
-(domaines internes, formats d'identifiants, etc.) et ne doit jamais être committé.
-Le hook `pre-commit` est inopérant tant que ce fichier n'existe pas.
-
-Ou simplement ajouter le repo au `PATH`.
-
-### Autocomplétion bash
+### Git hooks (contributors)
 
 ```bash
-# Dans ~/.bashrc
+git config core.hooksPath .githooks
+cp .githooks/patterns.example .githooks/patterns.local
+$EDITOR .githooks/patterns.local   # add your internal patterns (hostnames, IPs, user IDs)
+```
+
+Two hooks are provided in `.githooks/`:
+- **`pre-commit`**: blocks commits that contain internal strings (patterns
+  defined in `patterns.local`, which is gitignored).
+- **`commit-msg`**: enforces the [Conventional Commits](https://www.conventionalcommits.org/)
+  format (`feat:`, `fix:`, `docs:`, etc.).
+
+`patterns.local` is gitignored: it holds your sensitive patterns (internal
+domains, ID formats, etc.) and must never be committed. The `pre-commit`
+hook does nothing until this file exists.
+
+### Bash completion
+
+```bash
+# In ~/.bashrc
 source ~/psm-ssh/completions/psm.bash
 ```
 
-Complète les hostnames depuis `~/.ssh/config` :
+Completes hostnames from `~/.ssh/config`:
 
 ```
 $ psm srv<TAB><TAB>
@@ -167,18 +172,32 @@ $ psm admin@srv<TAB><TAB>
 admin@srv-prod01  admin@srv-prod02  admin@srv-staging
 ```
 
+For `psm cp`, it completes local paths (descending into subdirectories) as
+well as hostnames for the remote side, including after global flags
+(`psm -p 2222 cp ...`):
+
+```
+$ psm cp ./work/<TAB><TAB>
+build/     deploy.sh
+$ psm cp ./work/deploy.sh srv<TAB><TAB>
+srv-prod01  srv-prod02  srv-staging
+```
+
+Path completion uses bash-completion's `_filedir` when it is installed, and
+falls back to `compgen -f` otherwise.
+
 ## Configuration
 
-Trois façons de configurer, par ordre de préférence :
+Three ways to configure psm, in order of preference:
 
-### 1. Fichier de config (recommandé — survit au `git pull`)
+### 1. Config file (recommended — survives `git pull`)
 
-Le script cherche automatiquement (dans l'ordre) :
-- `$PSM_CONFIG` si défini
+The script looks for, in this order:
+- `$PSM_CONFIG` if set
 - `~/.config/psm/config`
 - `~/.psmrc`
 
-Un exemple est fourni dans le repo : [`config.example`](config.example).
+An example is provided in the repo: [`config.example`](config.example).
 
 ```bash
 mkdir -p ~/.config/psm
@@ -186,82 +205,83 @@ cp config.example ~/.config/psm/config
 $EDITOR ~/.config/psm/config
 ```
 
-Le fichier est sourcé comme du bash — syntaxe simple `VAR="valeur"`.
+The file is sourced as bash: plain `VAR="value"` syntax.
 
-### 2. Variables d'environnement (override ponctuel)
+### 2. Environment variables (one-off override)
 
 ```bash
-export PSMP_HOST="psmp.mon-entreprise.com"
-export VAULT_USER="prenom.nom"
+export PSMP_HOST="psmp.example.com"
+export VAULT_USER="first.last"
 export LDAP_USER="john.doe"
 ```
 
-Ou one-shot : `VAULT_USER=autre.user psm admin@srv`.
+Or for a single run: `VAULT_USER=other.user psm admin@srv`.
 
-**Précédence** : par défaut le fichier de config surcharge l'environnement
-(`VAR="..."`). Pour que l'env garde la priorité sur certaines clés, utiliser
-le pattern conditionnel dans le fichier de config :
+**Precedence**: by default the config file overrides the environment
+(`VAR="..."`). To let the environment win for some keys, use the conditional
+form in the config file:
 
 ```bash
 # ~/.config/psm/config
-: "${VAULT_USER:=prenom.nom}"   # env var VAULT_USER gagne si définie
+: "${VAULT_USER:=first.last}"   # the VAULT_USER env var wins if set
 ```
 
-### 3. Édition directe du script
+### 3. Editing the script directly
 
-Le bloc `CONFIG` en haut de `psm` — à éviter, ça pète au prochain `git pull`.
+The `CONFIG` block at the top of `psm`. Avoid it: your changes conflict with
+the next `git pull`.
 
-### Override `PSMP_HOST` par host (via `~/.ssh/config`)
+### Per-host `PSMP_HOST` override (via `~/.ssh/config`)
 
-Si une partie de ta flotte passe par un PSMP différent, tu peux surcharger
-`PSMP_HOST` par host (ou par pattern) avec la directive standard `SetEnv` :
+If part of your fleet goes through a different PSMP, you can override
+`PSMP_HOST` per host (or per pattern) with the standard `SetEnv` directive:
 
 ```sshconfig
-# Tous les hosts dont le nom commence par LC utilisent le PSMP "secure"
+# All hosts whose name starts with LC use the "secure" PSMP
 Host LC*
     SetEnv PSM_PSMP_HOST=psmp-secure.example.com
 
-# Un host spécifique
+# A specific host
 Host srv-prod42
     HostName 10.9.8.7
     User admin
     SetEnv PSM_PSMP_HOST=psmp-prod.example.com
 ```
 
-Le script lit la valeur via `ssh -G` (comme il lit déjà `HostName` et `User`).
-L'override par ssh config gagne toujours sur la config psm et l'environnement.
+The script reads the value through `ssh -G` (the same way it reads `HostName`
+and `User`). The ssh config override always wins over the psm config and the
+environment.
 
+### Supported variables
 
-Variables supportées :
-
-| Variable           | Défaut                | Description                              |
+| Variable           | Default               | Description                              |
 |--------------------|-----------------------|------------------------------------------|
-| `PSMP_HOST`        | `psmp.example.com`    | Hostname du proxy PSMP                   |
-| `VAULT_USER`       | `ton.vault.user`      | User CyberArk vault                      |
-| `KDBX_PATH`        | `~/Passwords.kdbx`    | Base KeePassXC                           |
-| `KDBX_GROUP`       | `PSM`                 | Groupe contenant les entrées             |
-| `VAULT_PASS_ENTRY` | `VaultPassword`       | Title de l'entrée vault password         |
-| `GPG_MASTER_FILE`  | `~/.psm-master.gpg`   | Master password KeePassXC chiffré en GPG |
-| `LDAP_USER`        | (vide)                | Liste d'users LDAP/AD (séparés par espaces) |
-| `SSH_OPTS`         | (voir script)         | Options ssh                              |
-| `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) pour les prompts             |
-| `AUTO_SUDO`        | `1`                   | `1` auto-remplit les prompts `[sudo]` ; `0` sudo manuel |
+| `PSMP_HOST`        | `psmp.example.com`    | PSMP proxy hostname                      |
+| `VAULT_USER`       | `your.vault.user`     | CyberArk vault user                      |
+| `KDBX_PATH`        | `~/Passwords.kdbx`    | KeePassXC database                       |
+| `KDBX_GROUP`       | `PSM`                 | Group that holds the entries             |
+| `VAULT_PASS_ENTRY` | `VaultPassword`       | Title of the vault password entry        |
+| `GPG_MASTER_FILE`  | `~/.psm-master.gpg`   | GPG-encrypted KeePassXC master password  |
+| `LDAP_USER`        | (empty)               | LDAP/AD users (space-separated)          |
+| `SSH_OPTS`         | (see script)          | ssh options                              |
+| `EXPECT_TIMEOUT`   | `30`                  | Timeout (s) for the prompts              |
+| `AUTO_SUDO`        | `1`                   | `1` auto-fills `[sudo]` prompts; `0` manual sudo |
 
 ## Usage
 
 ```bash
-psm admin@srv-prod01              # syntaxe user@host explicite
-psm srv-prod01                    # user extrait de ~/.ssh/config
-psm -d root@switch-core01         # debug : affiche tous les échanges expect
-psm -S admin@srv-prod01           # désactive l'auto-sudo (sudo manuel)
-psm -p 2222 admin@srv-prod01      # port SSH custom
-psm -v autre.user admin@host      # override du vault user
-psm -l                            # liste les targets dans KeePassXC
-psm -h                            # aide
+psm admin@srv-prod01              # explicit user@host syntax
+psm srv-prod01                    # user taken from ~/.ssh/config
+psm -d root@switch-core01         # debug: shows all expect exchanges
+psm -S admin@srv-prod01           # disable auto-sudo (manual sudo)
+psm -p 2222 admin@srv-prod01      # custom SSH port
+psm -v other.user admin@host      # override the vault user
+psm -l                            # list the targets in KeePassXC
+psm -h                            # help
 ```
 
-**Syntaxe `host` seul (sans user)** : si tu as configuré le user pour ce host
-dans `~/.ssh/config`, tu peux omettre la partie `user@`. Exemple :
+**Bare `host` syntax (no user)**: if the user for this host is set in
+`~/.ssh/config`, you can omit the `user@` part. Example:
 
 ```
 # ~/.ssh/config
@@ -270,170 +290,177 @@ Host srv-prod01
     User admin
 ```
 
-→ `psm srv-prod01` est équivalent à `psm admin@10.2.2.2`.
+→ `psm srv-prod01` is equivalent to `psm admin@10.2.2.2`.
 
-**Auto-sudo** : les prompts `[sudo] password for ...:` sont automatiquement
-remplis avec le target password pendant la session interactive.
+**Auto-sudo**: `[sudo] password for ...:` prompts are filled automatically
+with the target password during the interactive session. Disable it with
+`-S` or `AUTO_SUDO=0` (see [Security](#security)).
 
-## Exécuter une commande (non-interactif)
+## Running a command (non-interactive)
 
-Comme `ssh host "cmd"`, un 2ᵉ argument est exécuté sur la cible sans ouvrir de
-shell interactif ; le code retour de la commande est propagé.
+As with `ssh host "cmd"`, extra arguments are run on the target without
+opening an interactive shell, and the exit code of the command is propagated.
 
 ```bash
 psm srv-prod01 "systemctl status nginx"
 psm admin@srv-prod01 ls -la /data
 ```
 
-> Le proxy PSMP injecte un banner (« session is being recorded » + banner légal)
-> **avant** la sortie de la commande, même en non-interactif. C'est un réglage
-> serveur CyberArk, non désactivable côté client — en tenir compte lors d'un pipe.
+> The PSMP injects a banner ("session is being recorded" + legal banner)
+> **before** the command output, even in non-interactive mode. This is a
+> CyberArk server setting that cannot be disabled client-side: keep it in mind
+> when piping the output.
 
-## Transfert de fichiers (`psm cp`)
+## File transfer (`psm cp`)
 
-Transfert via `scp` à travers le PSMP. Push et pull, récursif, multi-fichiers.
-Les flags scp sont transmis tels quels.
+Transfer through the PSMP with `scp`. Push and pull, recursive, multiple
+files. scp flags are passed through as is.
 
 ```bash
 psm cp ./deploy.sh srv-prod01:/tmp/        # push
-psm cp ./deploy.sh admin@srv-prod01:/tmp/  # push, user explicite
+psm cp ./deploy.sh admin@srv-prod01:/tmp/  # push, explicit user
 psm cp srv-prod01:/etc/hosts .             # pull
-psm cp -r ./dist srv-prod01:/var/www/      # récursif
-psm cp a.conf b.conf srv-prod01:/etc/      # multi-fichiers
+psm cp -r ./dist srv-prod01:/var/www/      # recursive
+psm cp a.conf b.conf srv-prod01:/etc/      # multiple files
 ```
 
-Le port du PSMP se règle via `psm -p PORT cp …` (traduit en `-P` pour scp).
-Le code retour de scp est propagé.
+The PSMP port is set with `psm -p PORT cp …` (translated to `-P` for scp).
+The scp exit code is propagated.
 
-## Résolution hostname
+## Hostname resolution
 
-Le script résout automatiquement les hostnames avant de les passer au PSMP,
-dans cet ordre :
+The script resolves hostnames before passing them to the PSMP, in this order:
 
-1. **`~/.ssh/config`** — `Host srv-prod01` / `HostName 10.2.2.2` (instantané)
-2. **`/etc/hosts` + DNS** — résolution système avec timeout de 2s
-3. **Aucun match** — le hostname est passé tel quel au PSMP
+1. **`~/.ssh/config`** — `Host srv-prod01` / `HostName 10.2.2.2` (instant)
+2. **`/etc/hosts` + DNS** — system resolution with a 2s timeout
+3. **No match** — the hostname is passed to the PSMP as is
 
-Le lookup KeePassXC essaie d'abord le nom original (`app@srv-prod01`), puis
-le nom résolu (`app@10.2.2.2`). Les deux conventions de nommage fonctionnent.
+For a service account, the KeePassXC lookup tries the resolved name first
+(`app@10.2.2.2`), then the original name (`app@srv-prod01`). Both naming
+conventions work (see [KeePassXC entry layout](#keepassxc-entry-layout)).
 
-Le timeout DNS court (2s) évite les blocages sur les hostnames non résolvables
-depuis le poste client — le PSMP a son propre DNS interne pour la résolution finale.
+The short DNS timeout (2s) avoids hanging on hostnames that the client
+machine cannot resolve: the PSMP has its own internal DNS for the final
+resolution.
 
 ## Flow
 
-### Mode clé SSH + GPG (sans GUI)
+### SSH key + GPG mode (no GUI)
 
 ```
 psm admin@srv-prod01
   │
-  ├─ ssh-agent a des clés → vault password non requis
+  ├─ ssh-agent has keys → vault password not needed
   ├─ gpg -qd ~/.psm-master.gpg
   │    → keepassxc-cli show ... "PSM/admin@srv-prod01" → TARGET_PASS (env)
   │
   ├─ expect:
-  │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
-  │    [banner masqué, vault auth par clé SSH]
-  │    "Password:"              → envoie TARGET_PASS
-  │    interact (auto-sudo sur prompts [sudo])
+  │    spawn ssh your.vault.user@admin@srv-prod01@psmp.example.com
+  │    [banner hidden, vault auth with the SSH key]
+  │    "Password:"              → sends TARGET_PASS
+  │    interact (auto-sudo on [sudo] prompts)
   │
-  └─ shell interactif sur srv-prod01
+  └─ interactive shell on srv-prod01
 ```
 
-### Mode clé SSH + Secret Service (GUI)
+### SSH key + Secret Service mode (GUI)
 
 ```
 psm admin@srv-prod01
   │
-  ├─ ssh-agent a des clés → vault password non requis
+  ├─ ssh-agent has keys → vault password not needed
   ├─ secret-tool lookup Title "admin@srv-prod01"   → TARGET_PASS (env)
   │
   ├─ expect:
-  │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
-  │    [banner masqué, vault auth par clé SSH]
-  │    "Password:"       → envoie TARGET_PASS
+  │    spawn ssh your.vault.user@admin@srv-prod01@psmp.example.com
+  │    [banner hidden, vault auth with the SSH key]
+  │    "Password:"       → sends TARGET_PASS
   │    interact
   │
-  └─ shell interactif sur srv-prod01
+  └─ interactive shell on srv-prod01
 ```
 
-### Mode password (vault + target)
+### Password mode (vault + target)
 
 ```
 psm admin@srv-prod01
   │
-  ├─ ssh-agent sans clé → fetch vault password
+  ├─ ssh-agent without keys → fetch the vault password
   ├─ fetch "VaultPassword"                         → VAULT_PASS  (env)
   ├─ fetch "admin@srv-prod01"                      → TARGET_PASS (env)
-  │   (source: secret-tool → keepassxc-cli+GPG → keepassxc-cli interactif)
+  │   (source: secret-tool → keepassxc-cli+GPG → interactive keepassxc-cli)
   │
   ├─ expect:
-  │    spawn ssh ton.vault.user@admin@srv-prod01@psmp.example.com
-  │    [banner masqué]
-  │    "Vault Password:" → envoie VAULT_PASS
-  │    "Password:"       → envoie TARGET_PASS
+  │    spawn ssh your.vault.user@admin@srv-prod01@psmp.example.com
+  │    [banner hidden]
+  │    "Vault Password:" → sends VAULT_PASS
+  │    "Password:"       → sends TARGET_PASS
   │    interact
   │
-  └─ shell interactif sur srv-prod01
+  └─ interactive shell on srv-prod01
 ```
 
-## Sécurité
+## Security
 
-- Les mots de passe transitent par variables d'environnement vers `expect`
-  (`$env(VAULT_PASS)`, `$env(TARGET_PASS)`) — jamais sur la ligne de commande,
-  donc invisibles dans `ps`, `/proc/*/cmdline`, et l'historique shell.
-- `unset` immédiat des variables après la fin d'`expect`, y compris en cas
-  d'erreur (pattern `|| rc=$?`).
-- Aucun mot de passe écrit sur disque. Le fichier expect temporaire ne
-  contient que des références `$env(...)`, pas de valeurs.
-- En mode Secret Service, `secret-tool` parle au démon via DBus, sans
-  jamais exposer la base KeePassXC.
-- En mode GPG, seul le master password chiffré est sur disque. Le
-  déchiffrement passe par `gpg-agent` (cache limité dans le temps).
-- **Mode debug (`-d`)** : un avertissement est affiché car `exp_internal`
-  expose les mots de passe en clair dans la sortie. Ne pas utiliser en prod.
-- **Auto-sudo** (défaut activé) : le target password répond automatiquement aux
-  prompts `[sudo] password for …:` pendant la session. **Attention au rebond** :
-  si tu fais `ssh` vers un autre serveur depuis la cible, ce mécanisme enverrait
-  le mot de passe de la cible au prompt sudo du serveur rebondi (mauvais mot de
-  passe, et fuite d'un secret). Désactive-le alors :
-  - `psm -S host` pour la session, ou `AUTO_SUDO=0` en config par défaut ;
-  - à la volée dans une session déjà ouverte : `export SUDO_PROMPT='pw: '`
-    (change le prompt sudo pour qu'il échappe au mécanisme) puis `sudo -s`.
+- Passwords reach `expect` through environment variables
+  (`$env(VAULT_PASS)`, `$env(TARGET_PASS)`), never on the command line, so
+  they do not show up in `ps`, `/proc/*/cmdline` or the shell history.
+- The variables are `unset` as soon as `expect` exits, including on errors
+  (`|| rc=$?` pattern).
+- No password is written to disk. The temporary expect file only contains
+  `$env(...)` references, not values.
+- In Secret Service mode, `secret-tool` talks to the daemon over D-Bus
+  without ever exposing the KeePassXC database.
+- In GPG mode, only the encrypted master password is on disk. Decryption goes
+  through `gpg-agent` (time-limited cache).
+- **Debug mode (`-d`)**: a warning is printed because `exp_internal` shows
+  the passwords in clear text in the output. Do not use it in production.
+- **Auto-sudo** (on by default): the target password automatically answers
+  `[sudo] password for …:` prompts during the session. **Beware of hops**: if
+  you `ssh` from the target to another server, this mechanism would send the
+  target's password to the sudo prompt of the other server (wrong password,
+  and a secret leaked to a machine it does not belong to). Disable it then:
+  - `psm -S host` for the session, or `AUTO_SUDO=0` in the config as the default;
+  - on the fly in an open session: `export SUDO_PROMPT='pw: '` (changes the
+    sudo prompt so that it no longer matches) then `sudo -s`.
 
-## Codes de sortie
+## Exit codes
 
-| Code  | Cause                                         |
-|-------|-----------------------------------------------|
-| 0     | Session terminée normalement                  |
-| 2     | Erreur d'usage (args, options)                |
-| 3     | Récupération de mot de passe échouée          |
-| 10    | Vault password requis mais non disponible     |
-| 11    | Timeout en attendant un prompt                |
-| 12    | Connexion fermée (eof)                        |
-| 13    | Permission refusée (clé SSH rejetée)          |
-| 20–24 | Échec entre vault et target (incl. MFA)       |
-| 30–32 | Échec après auth target                       |
-| (scp/cmd) | Code retour réel de scp/ssh propagé (0 = ok)  |
+| Code  | Cause                                              |
+|-------|----------------------------------------------------|
+| 0     | Session ended normally                             |
+| 2     | Usage error (arguments, options)                   |
+| 3     | Password retrieval failed                          |
+| 10    | Vault password required but not available         |
+| 11    | Timeout waiting for a prompt                       |
+| 12    | Connection closed (eof)                            |
+| 13    | Permission denied (SSH key rejected)               |
+| 14    | SSH passphrase requested (key not loaded in the agent) |
+| 20–24 | Failure between vault and target (incl. MFA)      |
+| 30–32 | Failure after target auth                          |
 
-## Limitations connues
+In exec (`psm host "cmd"`) and `psm cp` modes, once authentication succeeds,
+the exit code is the one returned by the remote command or by scp, propagated
+as is (so it can overlap with the codes above).
 
-- **MFA non supporté** : si le PSMP demande un OTP entre les deux prompts,
-  le script abandonne avec un message clair (code 21).
-- Les regex de prompt (`vault password`, `password`) sont génériques. Si
-  ton PSMP utilise des libellés exotiques, lance avec `-d` pour voir les
-  échanges bruts et adapte les `expect` dans le script.
-- L'auto-sudo ne matche que le format `[sudo] password for ...:`.
-  Les prompts sudo custom ou les prompts `su` ne sont pas interceptés.
-- La résolution hostname ne gère pas IPv6 explicitement.
-- **exec — banner PSMP** : la sortie de `psm host "cmd"` est précédée du banner
-  légal / notification d'enregistrement injecté par le PSMP (non désactivable
-  côté client).
-- **`psm cp` — détection cible** : un flag scp à valeur contenant `:` avant un
-  `/` (ex. `-o Foo=a:b`, rare) peut être confondu avec une cible distante ;
-  utiliser `scp` directement dans ce cas.
-- **`psm cp`** ne gère pas le transfert distant→distant (une seule cible PSMP).
+## Known limitations
 
-## Licence
+- **MFA not supported**: if the PSMP asks for an OTP between the two prompts,
+  the script stops with a clear message (code 21).
+- The prompt regexes (`vault password`, `password`) are generic. If your PSMP
+  uses unusual labels, run with `-d` to see the raw exchanges and adapt the
+  `expect` blocks in the script.
+- Auto-sudo only matches the `[sudo] password for ...:` format. Custom sudo
+  prompts and `su` prompts are not intercepted.
+- Hostname resolution does not handle IPv6 explicitly.
+- **exec — PSMP banner**: the output of `psm host "cmd"` is preceded by the
+  legal banner / recording notice injected by the PSMP (cannot be disabled
+  client-side).
+- **`psm cp` — target detection**: an scp flag value containing `:` before a
+  `/` (e.g. `-o Foo=a:b`, rare) can be mistaken for the remote target; use
+  `scp` directly in that case.
+- **`psm cp`** does not support remote-to-remote transfers (a single PSMP target).
+
+## License
 
 MIT

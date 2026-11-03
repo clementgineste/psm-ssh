@@ -1,20 +1,20 @@
-# Installation complète de psm-ssh sur WSL2
+# Complete psm-ssh setup on WSL2
 
-Guide pas-à-pas pour setup psm-ssh sur WSL2 (Windows 10/11), avec gestion
-persistante de `ssh-agent` et `gpg-agent`, et mode keepassxc-cli + GPG
-(sans GUI).
+Step-by-step guide to set up psm-ssh on WSL2 (Windows 10/11), with
+persistent `ssh-agent` and `gpg-agent`, using the keepassxc-cli + GPG mode
+(no GUI).
 
-Testé sur **Ubuntu 22.04 / 24.04** et **Fedora** sous WSL2. Les commandes
-`apt` s'appliquent à Ubuntu/Debian ; remplacer par `dnf` pour Fedora.
+Tested on **Ubuntu 22.04 / 24.04** and **Fedora** under WSL2. The `apt`
+commands apply to Ubuntu/Debian; use `dnf` instead on Fedora.
 
 ---
 
-## 1. Prérequis WSL2
+## 1. WSL2 prerequisites
 
-### Activer systemd (WSL 0.67.6+)
+### Enable systemd (WSL 0.67.6+)
 
-systemd simplifie la gestion des services user (ssh-agent, gpg-agent).
-Éditer `/etc/wsl.conf` dans ta distro :
+systemd makes user services (ssh-agent, gpg-agent) easier to manage.
+Edit `/etc/wsl.conf` in your distro:
 
 ```ini
 [boot]
@@ -25,30 +25,31 @@ enabled=true
 appendWindowsPath=false
 ```
 
-Puis depuis PowerShell (pas WSL) :
+Then, from PowerShell (not WSL):
 
 ```powershell
 wsl --shutdown
 wsl
 ```
 
-Vérifier : `systemctl status` doit répondre sans erreur.
+Check: `systemctl status` should answer without errors.
 
-### Synchronisation de l'heure
+### Clock synchronization
 
-WSL2 peut dériver après une mise en veille, ce qui casse les tickets
-Kerberos et les certificats TLS. Forcer une resync à chaque démarrage :
+The WSL2 clock can drift after sleep, which breaks Kerberos tickets and
+TLS certificates. Force a resync at each startup:
 
 ```bash
-# Dans ~/.bashrc ou ~/.zshrc
+# In ~/.bashrc or ~/.zshrc
 alias wsl-time-sync='sudo hwclock -s'
 ```
 
-Ou systemd unit (plus propre) — on passe, pas critique pour psm-ssh.
+A systemd unit would be cleaner, but it is skipped here: not critical for
+psm-ssh.
 
 ---
 
-## 2. Installation des dépendances
+## 2. Installing dependencies
 
 ### Ubuntu / Debian
 
@@ -73,10 +74,10 @@ sudo dnf install -y \
     pinentry
 ```
 
-> **Pas besoin de `libsecret-tools` ni du GUI KeePassXC** sur WSL2 sans
-> serveur X/Wayland — on utilise le mode keepassxc-cli + GPG.
+> **No need for `libsecret-tools` or the KeePassXC GUI** on WSL2 without
+> an X/Wayland server: this guide uses the keepassxc-cli + GPG mode.
 
-Vérifier les versions :
+Check the versions:
 
 ```bash
 expect -v
@@ -87,12 +88,12 @@ gpg --version
 
 ---
 
-## 3. Configuration ssh-agent persistant
+## 3. Persistent ssh-agent
 
-WSL2 ferme le process parent à chaque terminal fermé → `ssh-agent` meurt
-aussi. Trois options, par préférence :
+WSL2 kills the parent process whenever a terminal is closed, so
+`ssh-agent` dies with it. Three options, in order of preference:
 
-### Option A — systemd user unit (recommandée, propre)
+### Option A — systemd user unit (recommended, clean)
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -112,27 +113,27 @@ EOF
 systemctl --user enable --now ssh-agent
 ```
 
-Puis exporter la variable dans `~/.bashrc` (ou `~/.zshrc`) :
+Then export the variable in `~/.bashrc` (or `~/.zshrc`):
 
 ```bash
 export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
 ```
 
-Reload le shell, puis :
+Reload the shell, then:
 
 ```bash
-ssh-add ~/.ssh/id_rsa          # ou la clé que tu utilises pour le PSMP
-ssh-add -l                     # doit lister la clé
+ssh-add ~/.ssh/id_rsa          # or the key you use for the PSMP
+ssh-add -l                     # should list the key
 ```
 
-La clé reste chargée jusqu'au reboot WSL2. Pour la recharger auto au boot,
-voir [`keychain`](https://www.funtoo.org/Keychain) ou un ExecStartPost
-sur l'unit systemd.
+The key stays loaded until WSL2 reboots. To reload it automatically at
+boot, see [`keychain`](https://www.funtoo.org/Keychain) or an
+ExecStartPost in the systemd unit.
 
-### Option B — démarrage dans `~/.bashrc` (simple, pas de systemd)
+### Option B — start from `~/.bashrc` (simple, no systemd)
 
 ```bash
-# Dans ~/.bashrc
+# In ~/.bashrc
 if ! pgrep -u "$USER" ssh-agent >/dev/null; then
     eval "$(ssh-agent -s)" >/dev/null
 fi
@@ -142,33 +143,33 @@ if [[ -z "${SSH_AUTH_SOCK:-}" ]] || ! ssh-add -l >/dev/null 2>&1; then
 fi
 ```
 
-Fragile quand plusieurs terminaux s'ouvrent en parallèle, mais suffit
-pour un usage simple.
+Fragile when several terminals open at the same time, but good enough for
+simple use.
 
-### Option C — bridger avec le ssh-agent Windows
+### Option C — bridge to the Windows ssh-agent
 
-Via [`npiperelay`](https://github.com/jstarks/npiperelay) + `socat`. Plus
-complexe mais unifie les clés entre Windows (OpenSSH natif) et WSL.
-À creuser si tu utilises déjà `ssh-agent` côté Windows.
+Through [`npiperelay`](https://github.com/jstarks/npiperelay) + `socat`.
+More complex, but it shares the keys between Windows (native OpenSSH) and
+WSL. Worth looking into if you already use `ssh-agent` on the Windows side.
 
-### Vérifier
+### Check
 
 ```bash
 ssh-add -l
-# Doit afficher : 4096 SHA256:... (RSA)
+# Should print: 4096 SHA256:... (RSA)
 ```
 
 ---
 
-## 4. Configuration gpg-agent
+## 4. gpg-agent configuration
 
-gpg-agent cache la passphrase de ta clé GPG après la première saisie, pour
-que `gpg -qd ~/.psm-master.gpg` soit silencieux aux appels suivants.
+gpg-agent caches the passphrase of your GPG key after the first entry, so
+that `gpg -qd ~/.psm-master.gpg` is silent on subsequent calls.
 
-### Définir le pinentry en mode terminal
+### Use a terminal pinentry
 
-WSL2 n'a pas de GUI → le pinentry par défaut (GTK/Qt) ne marche pas.
-Utiliser `pinentry-curses` (ncurses) :
+WSL2 has no GUI, so the default pinentry (GTK/Qt) does not work.
+Use `pinentry-curses` (ncurses):
 
 ```bash
 mkdir -p ~/.gnupg
@@ -183,19 +184,19 @@ EOF
 chmod 600 ~/.gnupg/gpg-agent.conf
 ```
 
-> Fedora : le binaire est `/usr/bin/pinentry` ou `/usr/bin/pinentry-tty`.
-> `which pinentry-curses || which pinentry` pour vérifier.
+> Fedora: the binary is `/usr/bin/pinentry` or `/usr/bin/pinentry-tty`.
+> Run `which pinentry-curses || which pinentry` to check.
 
-### Configurer le GPG_TTY
+### Set GPG_TTY
 
-gpg-agent a besoin de connaître le TTY courant pour afficher le pinentry.
-Ajouter dans `~/.bashrc` :
+gpg-agent needs to know the current TTY to display the pinentry.
+Add to `~/.bashrc`:
 
 ```bash
 export GPG_TTY=$(tty)
 ```
 
-### Forcer le reload de l'agent
+### Force an agent reload
 
 ```bash
 gpg-connect-agent reloadagent /bye
@@ -204,130 +205,132 @@ gpg-connect-agent reloadagent /bye
 ### Test
 
 ```bash
-# Crée un fichier test chiffré avec ta clé
-echo "test" | gpg --encrypt --recipient ton@email.com -o /tmp/test.gpg
+# Create a test file encrypted with your key
+echo "test" | gpg --encrypt --recipient you@example.com -o /tmp/test.gpg
 
-# Déchiffre (prompt la passphrase la première fois)
+# Decrypt (prompts for the passphrase the first time)
 gpg -qd /tmp/test.gpg
 
-# Re-déchiffre immédiatement (doit être silencieux, cache hit)
+# Decrypt again right away (should be silent, cache hit)
 gpg -qd /tmp/test.gpg
 
 rm /tmp/test.gpg
 ```
 
-Si le prompt ne s'affiche pas ou que `gpg-agent` râle sur le TTY, vérifier
-`echo $GPG_TTY` et re-exporter.
+If the prompt does not show up or `gpg-agent` complains about the TTY,
+check `echo $GPG_TTY` and export it again.
 
 ---
 
-## 5. Création de la clé GPG
+## 5. Creating the GPG key
 
-Si tu n'as pas encore de clé GPG personnelle :
+If you do not have a personal GPG key yet:
 
 ```bash
 gpg --full-generate-key
 ```
 
-Choix recommandés :
-- Type : `(1) RSA and RSA`
-- Taille : `4096`
-- Expiration : `0` (jamais) ou `2y` selon ta politique
-- Nom : ton nom
-- Email : ton email (utilisé comme `--recipient`)
-- Passphrase : **robuste** (c'est la seule chose qui protège ta base KeePassXC via chiffrement GPG)
+Recommended choices:
+- Type: `(1) RSA and RSA`
+- Size: `4096`
+- Expiration: `0` (never) or `2y`, depending on your policy
+- Name: your name
+- Email: your email (used as `--recipient`)
+- Passphrase: **strong** (it is the only thing protecting your KeePassXC database through GPG encryption)
 
-Vérifier :
+Check:
 
 ```bash
 gpg --list-secret-keys
 ```
 
-Noter l'email associé à la clé — il sera utilisé comme `--recipient`.
+Note the email associated with the key: it will be used as `--recipient`.
 
-### Backup de la clé (important)
+### Back up the key (important)
 
 ```bash
 mkdir -p ~/gpg-backup && chmod 700 ~/gpg-backup
-gpg --export-secret-keys --armor ton@email.com > ~/gpg-backup/private.key
-gpg --export --armor ton@email.com > ~/gpg-backup/public.key
+gpg --export-secret-keys --armor you@example.com > ~/gpg-backup/private.key
+gpg --export --armor you@example.com > ~/gpg-backup/public.key
 gpg --export-ownertrust > ~/gpg-backup/ownertrust.txt
 ```
 
-Stocker en lieu sûr (pas sur le poste pro, pas dans un repo git).
+Store it somewhere safe (not on your work machine, not in a git repo).
 
 ---
 
-## 6. Setup KeePassXC (mode CLI sans GUI)
+## 6. KeePassXC setup (CLI mode, no GUI)
 
-### Créer une base KeePassXC
+### Create a KeePassXC database
 
-Depuis WSL2, `keepassxc-cli` peut créer une base :
+From WSL2, `keepassxc-cli` can create a database:
 
 ```bash
 keepassxc-cli db-create ~/Passwords.kdbx --set-password
-# Taper le master password deux fois
+# Type the master password twice
 ```
 
-Ou depuis le GUI KeePassXC sur Windows, puis copier le `.kdbx` dans
-`~/` côté WSL2 (évite les problèmes de lock).
+Or create it from the KeePassXC GUI on Windows, then copy the `.kdbx` to
+`~/` on the WSL2 side (avoids lock issues).
 
-### Créer le groupe PSM
+### Create the PSM group
 
 ```bash
 keepassxc-cli mkdir ~/Passwords.kdbx PSM
-# Taper le master password
+# Type the master password
 ```
 
-### Ajouter des entrées
+### Add entries
 
 ```bash
-# Entrée target (compte de service sur un serveur)
+# Target entry (service account on a server)
 keepassxc-cli add -p ~/Passwords.kdbx "PSM/admin@srv-prod01"
-# Taper le master password, puis le mot de passe du compte
+# Type the master password, then the account password
 
-# Entrée LDAP (compte perso, même password partout)
+# LDAP entry (personal account, same password everywhere)
 keepassxc-cli add -p ~/Passwords.kdbx "PSM/john.doe"
 
-# Entrée vault (si mode password, optionnel en mode clé SSH)
+# Vault entry (password mode; optional in SSH key mode)
 keepassxc-cli add -p ~/Passwords.kdbx "PSM/VaultPassword"
 ```
 
-### Vérifier
+### Check
 
 ```bash
 keepassxc-cli ls ~/Passwords.kdbx PSM
-# Doit lister : admin@srv-prod01, john.doe, VaultPassword, ...
+# Should list: admin@srv-prod01, john.doe, VaultPassword, ...
 ```
 
 ---
 
-## 7. Chiffrer le master password KeePassXC avec GPG
+## 7. Encrypt the KeePassXC master password with GPG
 
-C'est le fichier que `psm` déchiffrera automatiquement via `gpg-agent`.
+This is the file that `psm` decrypts automatically through `gpg-agent`.
 
 ```bash
-# Saisir le master password (suit le -n pour pas de newline parasite)
-echo -n "TON_MASTER_PASSWORD_KEEPASSXC" | \
-    gpg --encrypt --recipient ton@email.com -o ~/.psm-master.gpg
+# Type the master password at the prompt: it stays out of the shell history,
+# and printf '%s' adds no trailing newline
+printf 'KeePassXC master password: '; read -rs pw; echo
+printf '%s' "$pw" | gpg --encrypt --recipient you@example.com -o ~/.psm-master.gpg
+unset pw
 
 chmod 600 ~/.psm-master.gpg
 ```
 
-Test du pipeline complet :
+Test the full pipeline:
 
 ```bash
 gpg -qd ~/.psm-master.gpg | \
     keepassxc-cli show -qsa Password ~/Passwords.kdbx PSM/admin@srv-prod01
-# Doit afficher le mot de passe target, sans prompt
+# Should print the target password, without any prompt
 ```
 
-Premier appel : prompt pinentry-curses pour la passphrase GPG. Suivants :
-silencieux (cache gpg-agent).
+First call: pinentry-curses prompts for the GPG passphrase. Subsequent
+calls: silent (gpg-agent cache).
 
 ---
 
-## 8. Installation de psm-ssh
+## 8. Installing psm-ssh
 
 ```bash
 cd ~
@@ -335,14 +338,14 @@ git clone https://github.com/clementgineste/psm-ssh.git
 cd psm-ssh
 chmod +x psm
 
-# Option 1 : installer dans /usr/local/bin (système)
+# Option 1: install into /usr/local/bin (system-wide)
 sudo install -m 755 psm /usr/local/bin/psm
 
-# Option 2 : ajouter au PATH (user)
+# Option 2: add to the PATH (per user)
 echo 'export PATH="$HOME/psm-ssh:$PATH"' >> ~/.bashrc
 ```
 
-### Activer les hooks git (si tu contribues)
+### Enable the git hooks (if you contribute)
 
 ```bash
 cd ~/psm-ssh
@@ -355,7 +358,7 @@ $EDITOR .githooks/patterns.local
 
 ## 9. Configuration
 
-Créer le fichier de config utilisateur :
+Create the user config file:
 
 ```bash
 mkdir -p ~/.config/psm
@@ -363,55 +366,59 @@ cp ~/psm-ssh/config.example ~/.config/psm/config
 $EDITOR ~/.config/psm/config
 ```
 
-Variables à remplir avec tes vraies valeurs :
+Variables to fill in with your real values:
 
 ```bash
-PSMP_HOST="ton-psmp.ton-entreprise.com"
-VAULT_USER="ton.vault.user"
+PSMP_HOST="psmp.example.com"
+VAULT_USER="your.vault.user"
 KDBX_PATH="$HOME/Passwords.kdbx"
 KDBX_GROUP="PSM"
 VAULT_PASS_ENTRY="VaultPassword"
 GPG_MASTER_FILE="$HOME/.psm-master.gpg"
-LDAP_USER="john.doe"             # ton user LDAP perso si applicable
+LDAP_USER="john.doe"             # your personal LDAP user, if applicable
 ```
 
-### Clé SSH pour le vault CyberArk
+### SSH key for the CyberArk vault
 
-Le PSMP accepte une auth par clé SSH pour le vault user (si configuré
-côté CyberArk). Ajouter la clé publique dans ton compte CyberArk via le
-Password Vault Web Access (PVWA), puis :
+The PSMP accepts SSH key authentication for the vault user (if enabled on
+the CyberArk side). Add the public key to your CyberArk account through
+the Password Vault Web Access (PVWA), then:
 
 ```bash
-ssh-add ~/.ssh/id_rsa       # si pas déjà chargée via Option A
+ssh-add ~/.ssh/id_rsa       # if not already loaded through Option A
 ```
 
-Sans clé chargée, `psm` bascule en mode password (demande le vault
-password dans KeePassXC).
+Without a loaded key, `psm` falls back to password mode (it fetches the
+vault password from KeePassXC).
 
 ---
 
 ## 10. Test
 
 ```bash
-# Mode debug — trace complète pour diagnostiquer
+# Debug mode — full trace for troubleshooting
 psm -d admin@srv-prod01
 ```
 
-Sortie attendue :
+Expected output:
 
 ```
-[DBG]  Résolution hostname : ssh -G srv-prod01
-[INFO] Cible : admin @ srv-prod01 (via ton-psmp.ton-entreprise.com:22)
-[DBG]  Vérification ssh-agent
-[INFO] Mode clé SSH (agent actif, clés chargées)
-[DBG]  Fetch target password pour 'admin@srv-prod01'
-[DBG]  Déchiffrement du master password via GPG (/home/user/.psm-master.gpg)
-[DBG]  Mot de passe récupéré via keepassxc-cli + GPG pour 'admin@srv-prod01'
-[DBG]  Target password OK (entrée KeePassXC : admin@srv-prod01)
-[DBG]  Spawn: ssh -p 22 ... ton.vault.user@admin@srv-prod01@ton-psmp.ton-entreprise.com
-[WARN] Mode debug : les mots de passe seront visibles dans la sortie expect
+[DBG]  Resolving ssh -G srv-prod01
+[DBG]  DNS resolution: getent hosts srv-prod01 (2s timeout)
+[DBG]  DNS not resolved, hostname passed as is
+[INFO] Target: admin @ srv-prod01 (via psmp.example.com:22)
+[DBG]  Checking ssh-agent
+[INFO] SSH key mode (agent running, keys loaded)
+[INFO] Looking up the target password in KeePassXC...
+[DBG]  Lookup 'admin@srv-prod01'
+[DBG]  Decrypting the master password via GPG (/home/user/.psm-master.gpg)
+[DBG]  Password retrieved via keepassxc-cli + GPG for 'admin@srv-prod01'
+[INFO] Password found (entry: PSM/admin@srv-prod01)
+[DBG]  Spawn: ssh -p 22 ... your.vault.user@admin@srv-prod01@psmp.example.com
+[WARN] Debug mode: passwords will be visible in the expect output
+[INFO] Auto-sudo on (the target password answers [sudo] prompts)
 ...
-# → shell interactif sur srv-prod01
+# → interactive shell on srv-prod01
 ```
 
 ---
@@ -420,37 +427,38 @@ Sortie attendue :
 
 ### `ssh-add -l` → "Could not open a connection to your authentication agent"
 
-`SSH_AUTH_SOCK` pas exporté. Relance le shell ou `source ~/.bashrc`.
+`SSH_AUTH_SOCK` is not exported. Restart the shell or run `source ~/.bashrc`.
 
 ### `gpg: decryption failed: No secret key`
 
-Le `--recipient` lors du chiffrement ne correspond pas à une clé secrète
-que tu possèdes. `gpg --list-secret-keys` pour vérifier, puis rechiffrer.
+The `--recipient` used for encryption does not match a secret key you
+own. Run `gpg --list-secret-keys` to check, then encrypt again.
 
 ### `Keyboard interactive authentication failed`
 
-Possibles causes :
-- Mauvais target password dans KeePassXC
-- Compte locked côté target
-- PSMP demande MFA (non supporté, voir limitations)
+Possible causes:
+- Wrong target password in KeePassXC
+- Account locked on the target
+- The PSMP asks for MFA (not supported, see limitations)
 
-Lancer en `-d` et regarder les échanges expect pour identifier à quelle
-étape ça coince.
+Run with `-d` and look at the expect exchanges to find the step where it
+gets stuck.
 
 ### `gpg: cannot open tty: No such device or address`
 
-`GPG_TTY` pas exporté. Ajouter `export GPG_TTY=$(tty)` dans `~/.bashrc`
-et `gpg-connect-agent reloadagent /bye`.
+`GPG_TTY` is not exported. Add `export GPG_TTY=$(tty)` to `~/.bashrc`
+and run `gpg-connect-agent reloadagent /bye`.
 
 ### `keepassxc-cli: command not found`
 
-Sur certaines Fedora, le binaire est dans un path non-standard. `dnf list
---installed | grep keepassxc` puis `which keepassxc-cli` pour localiser.
+On some Fedora installs, the binary lives in a non-standard path. Run
+`dnf list --installed | grep keepassxc`, then `which keepassxc-cli` to
+locate it.
 
-### Les DNS lookups prennent 30+ secondes
+### DNS lookups take 30+ seconds
 
-WSL2 hérite parfois de résolveurs DNS cassés depuis Windows. Check
-`/etc/resolv.conf`. Fix temporaire :
+WSL2 sometimes inherits broken DNS resolvers from Windows. Check
+`/etc/resolv.conf`. Temporary fix:
 
 ```bash
 sudo tee /etc/resolv.conf > /dev/null <<'EOF'
@@ -459,55 +467,49 @@ nameserver 8.8.8.8
 EOF
 ```
 
-Et dans `/etc/wsl.conf` :
+And in `/etc/wsl.conf`:
 
 ```ini
 [network]
 generateResolvConf=false
 ```
 
-### psm ferme immédiatement sans erreur
+### psm exits immediately without an error
 
-Typiquement dû à `set -euo pipefail` qui tue le script silencieusement sur
-une commande qui échoue. Lancer en `-d` et observer la dernière ligne de
-debug affichée pour localiser l'étape fautive.
+Usually caused by `set -euo pipefail` silently killing the script on a
+failing command. Run with `-d` and look at the last debug line printed to
+locate the failing step.
 
 ### `gpg: can't connect to the agent: IPC connect call failed`
 
-gpg-agent pas démarré. `gpg-connect-agent reloadagent /bye` ou
-`systemctl --user restart gpg-agent` si systemd-based.
+gpg-agent is not running. Run `gpg-connect-agent reloadagent /bye`, or
+`systemctl --user restart gpg-agent` on a systemd-based setup.
 
 ---
 
-## 12. Bonus : alias et intégration shell
+## 12. Bonus: aliases and shell integration
 
-### Autocomplétion des targets
+### Target completion
 
-Depuis la liste des entrées KeePassXC :
+Use the completion shipped with the repo (flags, hostnames from
+`~/.ssh/config`, local paths for `psm cp`):
 
 ```bash
-_psm_complete() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local entries
-    entries=$(gpg -qd ~/.psm-master.gpg 2>/dev/null | \
-              keepassxc-cli ls -q ~/Passwords.kdbx PSM 2>/dev/null | \
-              grep '@')
-    COMPREPLY=( $(compgen -W "$entries" -- "$cur") )
-}
-complete -F _psm_complete psm
+# In ~/.bashrc
+source ~/psm-ssh/completions/psm.bash
 ```
 
-À sourcer depuis `~/.bashrc`. L'autocomplétion demandera la passphrase GPG
-une fois, puis fera cache.
+It never touches KeePassXC or GPG, so pressing TAB does not decrypt anything.
+See the "Bash completion" section of the README.
 
-### Raccourci pour les targets fréquents
+### Shortcut for frequent targets
 
 ```bash
 alias psmprod='psm admin@srv-prod01'
 ```
 
-### Ouvrir plusieurs sessions en parallèle
+### Open several sessions in parallel
 
-Chaque `psm` crée un process indépendant. Aucune contention sur KeePassXC
-tant que tu ne modifies pas la base. Plusieurs targets simultanés
-fonctionnent sans souci.
+Each `psm` runs as an independent process. There is no contention on
+KeePassXC as long as you do not modify the database. Several simultaneous
+targets work fine.

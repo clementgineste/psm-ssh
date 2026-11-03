@@ -1,22 +1,22 @@
-# Exemple de fichier de config psm
+# Example psm config file
 #
-# Copier vers :
-#   ~/.config/psm/config   (priorité 1, XDG standard)
-#   ~/.psmrc               (priorité 2, dotfile classique)
+# Copy it to:
+#   ~/.config/psm/config   (priority 1, XDG standard)
+#   ~/.psmrc               (priority 2, classic dotfile)
 #
-# Ou pointer vers un chemin custom :
-#   export PSM_CONFIG=/chemin/vers/mon/config
+# Or point to a custom path:
+#   export PSM_CONFIG=/path/to/my/config
 #
-# Le fichier est sourcé comme du bash, donc syntaxe bash standard.
+# The file is sourced as bash, so standard bash syntax applies.
 
 # -----------------------------------------------------------------------------
-# Infra CyberArk
+# CyberArk infrastructure
 # -----------------------------------------------------------------------------
 PSMP_HOST="psmp.example.com"
-VAULT_USER="prenom.nom"
+VAULT_USER="first.last"
 
-# Override PSMP par host : voir README, section "Override PSMP_HOST par host".
-# Utilise `SetEnv PSM_PSMP_HOST=...` dans ~/.ssh/config (supporte Host LC*, etc.)
+# Per-host PSMP override: see the README, "Per-host PSMP_HOST override" section.
+# Use `SetEnv PSM_PSMP_HOST=...` in ~/.ssh/config (supports Host LC*, etc.)
 
 # -----------------------------------------------------------------------------
 # KeePassXC
@@ -25,14 +25,14 @@ KDBX_PATH="$HOME/Passwords.kdbx"
 KDBX_GROUP="PSM"
 VAULT_PASS_ENTRY="VaultPassword"
 
-# Master password GPG-chiffré (mode CLI sans GUI)
+# GPG-encrypted master password (CLI mode, no GUI)
 GPG_MASTER_FILE="$HOME/.psm-master.gpg"
 
 # -----------------------------------------------------------------------------
-# Comptes LDAP / AD — liste séparée par espaces
-# Les users listés ici ont une entrée KeePassXC nommée par user seul (pas
-# `user@host`). Le lookup essaie `user` en premier pour ces comptes, évitant
-# des allers-retours inutiles quand le même mot de passe marche partout.
+# LDAP / AD accounts — space-separated list
+# The users listed here have a KeePassXC entry named after the user alone
+# (not `user@host`). The lookup tries `user` first for these accounts, which
+# avoids useless round trips when the same password works everywhere.
 # -----------------------------------------------------------------------------
 LDAP_USER="ldap.user"
 
@@ -42,7 +42,7 @@ LDAP_USER="ldap.user"
 # SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
 # EXPECT_TIMEOUT="30"
 
-# Auto-sudo : 1 = répond automatiquement aux prompts [sudo] avec le target
-# password (pratique sur la cible directe). 0 = sudo manuel (recommandé si tu
-# rebondis vers d'autres serveurs — évite d'envoyer le mauvais mot de passe).
+# Auto-sudo: 1 = automatically answers [sudo] prompts with the target
+# password (handy on the target itself). 0 = manual sudo (recommended if you
+# hop to other servers from the target — avoids sending the wrong password).
 # AUTO_SUDO="1"

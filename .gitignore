@@ -15,10 +15,10 @@
 .DS_Store
 Thumbs.db
 
-# Local config (qui pourrait contenir hostname/user réels)
+# Local config (may contain real hostnames/users)
 psm.local
 .env
 .env.local
 
-# Patterns interdits pour le hook pre-commit (contient infos sensibles locales)
+# Forbidden patterns for the pre-commit hook (holds local sensitive values)
 .githooks/patterns.local
