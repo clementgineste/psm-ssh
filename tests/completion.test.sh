@@ -49,6 +49,9 @@ run_suite() {
     assert_eq "$mode: hosts"            "srv-prod01|srv-prod02"             "$(complete_words psm srv)"
     assert_eq "$mode: user@host"        "admin@srv-prod01|admin@srv-prod02" "$(complete_words psm admin@srv-prod0)"
     assert_eq "$mode: cp subcommand"    "cp"                                "$(complete_words psm c)"
+    assert_eq "$mode: doctor subcommand" "doctor"                           "$(complete_words psm doc)"
+    assert_eq "$mode: setup subcommand" "setup|srv-prod01|srv-prod02"       "$(complete_words psm s)"
+    assert_eq "$mode: nothing after doctor" ""                              "$(complete_words psm doctor '')"
     assert_eq "$mode: hosts after -p"   "srv-prod01|srv-prod02"             "$(complete_words psm -p 2222 srv)"
 
     assert_eq "$mode: cp local dir"     "./work/sub"                        "$(complete_words psm cp ./work/)"

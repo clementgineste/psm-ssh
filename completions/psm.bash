@@ -32,6 +32,11 @@ _psm_complete() {
         esac
     done
 
+    # doctor and setup take no argument
+    if (( cmd_idx > 0 )) && [[ "${COMP_WORDS[cmd_idx]}" == @(doctor|setup) ]]; then
+        return
+    fi
+
     # cp subcommand: complete local paths + hostnames
     if (( cmd_idx > 0 )) && [[ "${COMP_WORDS[cmd_idx]}" == "cp" ]]; then
         local hosts_cp
@@ -63,7 +68,7 @@ _psm_complete() {
         local partial="${cur#*@}"
         COMPREPLY=( $(compgen -P "$prefix" -W "$hosts" -- "$partial") )
     else
-        COMPREPLY=( $(compgen -W "cp $hosts" -- "$cur") )
+        COMPREPLY=( $(compgen -W "cp doctor setup $hosts" -- "$cur") )
     fi
 }
 complete -F _psm_complete psm
