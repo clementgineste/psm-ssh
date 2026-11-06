@@ -21,10 +21,12 @@ set -euo pipefail
 #   - `: "${VAULT_USER:=foo}"`        → environment keeps priority
 # =============================================================================
 PSM_CONFIG="${PSM_CONFIG:-}"
+PSM_CONFIG_LOADED=""    # path of the config file actually sourced (shown by psm doctor)
 for _candidate in "$PSM_CONFIG" "$HOME/.config/psm/config" "$HOME/.psmrc"; do
     if [[ -n "$_candidate" && -f "$_candidate" ]]; then
         # shellcheck source=/dev/null
         source "$_candidate"
+        PSM_CONFIG_LOADED="$_candidate"
         break
     fi
 done
@@ -66,6 +68,9 @@ usage() {
     cat <<EOF
 Usage: psm [options] <targetuser@targethost|targethost> [command]
        psm [options] cp [scp-flags] SRC... DST
+       psm doctor      Check the installation (changes nothing)
+       psm setup       Guided installation: packages, psm link, config,
+                       ssh-agent, GPG, KeePassXC database, ~/.bashrc
 
 Connects to a target server through the CyberArk PSMP proxy.
 Retrieves the passwords (vault + target) from KeePassXC.
@@ -686,6 +691,860 @@ run_scp() {
 }
 
 # =============================================================================
+# psm doctor / psm setup — shared helpers
+# =============================================================================
+PSM_BASHRC_BEGIN='# >>> psm >>>'
+PSM_BASHRC_END='# <<< psm <<<'
+DOC_FAILS=0
+DOC_WARNS=0
+
+# Real path of this script (follows the /usr/local/bin/psm link to the clone)
+psm_self() { readlink -f "${BASH_SOURCE[0]}"; }
+
+detect_pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1; then
+        echo apt
+    elif command -v dnf >/dev/null 2>&1; then
+        echo dnf
+    fi
+}
+
+# Package that provides a command. "pinentry" stands for any terminal pinentry.
+pkg_for_cmd() {
+    local pm="$1" cmd="$2"
+    case "$cmd" in
+        expect)                echo expect ;;
+        ssh|ssh-add|ssh-agent) if [[ "$pm" == dnf ]]; then echo openssh-clients; else echo openssh-client; fi ;;
+        gpg)                   if [[ "$pm" == dnf ]]; then echo gnupg2; else echo gnupg; fi ;;
+        keepassxc-cli)         echo keepassxc ;;
+        pinentry)              if [[ "$pm" == dnf ]]; then echo pinentry; else echo pinentry-curses; fi ;;
+    esac
+}
+
+# Space-separated list of the packages to install (empty when nothing is missing)
+missing_packages() {
+    local pm cmd pkg out=""
+    pm=$(detect_pkg_manager)
+    for cmd in expect ssh ssh-add ssh-agent gpg keepassxc-cli pinentry; do
+        if [[ "$cmd" == pinentry ]]; then
+            command -v pinentry-curses >/dev/null 2>&1 && continue
+            command -v pinentry >/dev/null 2>&1 && continue
+        else
+            command -v "$cmd" >/dev/null 2>&1 && continue
+        fi
+        pkg=$(pkg_for_cmd "$pm" "$cmd")
+        [[ " $out " == *" $pkg "* ]] || out+="${out:+ }$pkg"
+    done
+    printf '%s' "$out"
+}
+
+# Double-quoted bash literal, safe to source back
+cfg_quote() {
+    local v="$1"
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    v="${v//\$/\\\$}"
+    v="${v//\`/\\\`}"
+    printf '"%s"' "$v"
+}
+
+# Same, but a path under $HOME is written as "$HOME/..." (survives a new login)
+cfg_path_quote() {
+    local v="$1" q
+    [[ "$v" == "~/"* ]] && v="$HOME/${v#\~/}"
+    if [[ "$v" == "$HOME/"* ]]; then
+        q=$(cfg_quote "${v#"$HOME"/}")
+        printf '"$HOME/%s' "${q#\"}"
+    else
+        cfg_quote "$v"
+    fi
+}
+
+# Writes a minimal config file from the current variables
+write_config() {
+    local file="$1"
+    mkdir -p "$(dirname "$file")"
+    (
+        umask 077
+        {
+            printf '# psm configuration, written by `psm setup`.\n'
+            printf '# All the options are documented in config.example (psm repository).\n'
+            printf 'PSMP_HOST=%s\n'       "$(cfg_quote "$PSMP_HOST")"
+            printf 'VAULT_USER=%s\n'      "$(cfg_quote "$VAULT_USER")"
+            printf 'KDBX_PATH=%s\n'       "$(cfg_path_quote "$KDBX_PATH")"
+            printf 'KDBX_GROUP=%s\n'      "$(cfg_quote "$KDBX_GROUP")"
+            printf 'GPG_MASTER_FILE=%s\n' "$(cfg_path_quote "$GPG_MASTER_FILE")"
+            printf 'LDAP_USER=%s\n'       "$(cfg_quote "$LDAP_USER")"
+        } > "$file"
+    )
+    chmod 600 "$file"
+}
+
+# Block managed in ~/.bashrc: ssh-agent detection, GPG_TTY, completion.
+# The socket list matches find_agent_socket.
+bashrc_block() {
+    local completion
+    completion="$(dirname "$(psm_self)")/completions/psm.bash"
+    printf '%s\n' "$PSM_BASHRC_BEGIN"
+    cat <<'EOF'
+# Managed by `psm setup`: changes between the two markers are overwritten.
+# ssh-agent: keep SSH_AUTH_SOCK if an agent answers on it, otherwise use the
+# first agent socket that answers, otherwise start an agent.
+_psm_agent_up() { SSH_AUTH_SOCK="$1" ssh-add -l >/dev/null 2>&1; [ $? -ne 2 ]; }
+if command -v ssh-add >/dev/null 2>&1 && ! _psm_agent_up "${SSH_AUTH_SOCK:-}"; then
+    _psm_run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    for _psm_s in "$_psm_run/openssh_agent" "$_psm_run/ssh-agent.socket" \
+                  "$_psm_run/psm-ssh-agent.sock" "$HOME/.ssh/psm-agent.sock"; do
+        if [ -S "$_psm_s" ] && _psm_agent_up "$_psm_s"; then
+            export SSH_AUTH_SOCK="$_psm_s"
+            break
+        fi
+    done
+    if ! _psm_agent_up "${SSH_AUTH_SOCK:-}"; then
+        mkdir -p -m 700 "$HOME/.ssh"
+        rm -f "$HOME/.ssh/psm-agent.sock"
+        eval "$(ssh-agent -s -a "$HOME/.ssh/psm-agent.sock")" >/dev/null
+    fi
+    unset _psm_run _psm_s
+fi
+unset -f _psm_agent_up
+# gpg-agent: tells pinentry which terminal to use
+export GPG_TTY="$(tty)"
+EOF
+    if [[ -f "$completion" ]]; then
+        printf '# Completion\n[ -r %q ] && . %q\n' "$completion" "$completion"
+    fi
+    printf '%s\n' "$PSM_BASHRC_END"
+}
+
+# Prints FILE with the psm block added (at the end) or replaced (in place)
+bashrc_render() {
+    local file="$1" block
+    block=$(bashrc_block)
+    if [[ -f "$file" ]] && grep -qxF -- "$PSM_BASHRC_BEGIN" "$file"; then
+        if ! grep -qxF -- "$PSM_BASHRC_END" "$file"; then
+            err "$file: '$PSM_BASHRC_BEGIN' without '$PSM_BASHRC_END', fix it by hand"
+            return 1
+        fi
+        PSM_BLOCK="$block" awk -v b="$PSM_BASHRC_BEGIN" -v e="$PSM_BASHRC_END" '
+            $0 == b { print ENVIRON["PSM_BLOCK"]; skip = 1; next }
+            skip && $0 == e { skip = 0; next }
+            !skip { print }' "$file"
+    else
+        if [[ -s "$file" ]]; then
+            cat "$file"
+            printf '\n'
+        fi
+        printf '%s\n' "$block"
+    fi
+}
+
+# Lines outside the psm block that also set SSH_AUTH_SOCK, GPG_TTY or load the completion
+bashrc_legacy_lines() {
+    [[ -f "$1" ]] || return 0
+    awk -v b="$PSM_BASHRC_BEGIN" -v e="$PSM_BASHRC_END" '
+        $0 == b { skip = 1 }
+        skip { if ($0 == e) skip = 0; next }
+        /^[[:space:]]*#/ { next }
+        /SSH_AUTH_SOCK=|GPG_TTY=|completions\/psm\.bash/ { printf "line %d: %s\n", NR, $0 }' "$1"
+}
+
+# Prints FILE with the lines found by bashrc_legacy_lines commented out
+bashrc_comment_legacy() {
+    awk -v b="$PSM_BASHRC_BEGIN" -v e="$PSM_BASHRC_END" '
+        $0 == b { skip = 1 }
+        skip { print; if ($0 == e) skip = 0; next }
+        /^[[:space:]]*#/ { print; next }
+        /SSH_AUTH_SOCK=|GPG_TTY=|completions\/psm\.bash/ { print "# (disabled by psm setup) " $0; next }
+        { print }' "$1"
+}
+
+# Socket of the distro ssh-agent started by systemd (ssh-agent.socket), if any
+distro_agent_socket() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user show ssh-agent.socket -P Listen 2>/dev/null | awk 'NR == 1 && NF { print $1 }'
+}
+
+systemd_user_ok() {
+    command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+
+# First agent socket that answers (same list as the ~/.bashrc block)
+find_agent_socket() {
+    local run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" s rc
+    for s in "$run/openssh_agent" "$run/ssh-agent.socket" \
+             "$run/psm-ssh-agent.sock" "$HOME/.ssh/psm-agent.sock"; do
+        [[ -S "$s" ]] || continue
+        rc=0
+        SSH_AUTH_SOCK="$s" ssh-add -l >/dev/null 2>&1 || rc=$?
+        if (( rc != 2 )); then
+            printf '%s' "$s"
+            return 0
+        fi
+    done
+}
+
+# Key ids a GPG file is encrypted for (read from the packets, nothing is decrypted)
+gpg_recipient_keyids() {
+    LC_ALL=C gpg --batch --list-only --list-packets -- "$1" 2>/dev/null \
+        | awk '/^:pubkey enc packet:/ { for (i = 1; i < NF; i++) if ($i == "keyid") print $(i + 1) }'
+}
+
+gpg_is_symmetric() {
+    LC_ALL=C gpg --batch --list-only --list-packets -- "$1" 2>/dev/null | grep -q '^:symkey enc packet:'
+}
+
+# Ids of all the secret keys and subkeys
+gpg_secret_keyids() {
+    LC_ALL=C gpg --batch --with-colons --list-secret-keys 2>/dev/null \
+        | awk -F: '$1 == "sec" || $1 == "ssb" { print $5 }'
+}
+
+# Usable secret keys that can encrypt: "<fingerprint><TAB><first user id>"
+gpg_encrypt_keys() {
+    LC_ALL=C gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '
+        $1 == "sec" { ok = ($2 !~ /[redni]/ && $12 ~ /E/); want_fpr = 1; uid = ""; next }
+        $1 == "fpr" && want_fpr { fpr = $10; want_fpr = 0; next }
+        $1 == "uid" && uid == "" && ok { uid = $10; printf "%s\t%s\n", fpr, uid }'
+}
+
+# =============================================================================
+# psm doctor: read-only checks, one line each, with a fix for every problem
+# =============================================================================
+d_section() { printf '\n%s\n' "$*"; }
+d_ok()      { printf '%s[ OK ]%s %s\n' "$C_GRN" "$C_RST" "$*"; }
+d_info()    { printf '%s[INFO]%s %s\n' "$C_CYN" "$C_RST" "$*"; }
+d_warn()    { printf '%s[WARN]%s %s\n' "$C_YLW" "$C_RST" "$*"; DOC_WARNS=$((DOC_WARNS + 1)); }
+d_fail()    { printf '%s[FAIL]%s %s\n' "$C_RED" "$C_RST" "$*"; DOC_FAILS=$((DOC_FAILS + 1)); }
+d_fix()     { printf '       fix: %s\n' "$*"; }
+
+doctor_packages() {
+    d_section "Packages"
+    local missing pm
+    missing=$(missing_packages)
+    pm=$(detect_pkg_manager)
+    if [[ -z "$missing" ]]; then
+        d_ok "expect, openssh, gpg, keepassxc-cli and pinentry are installed"
+    else
+        d_fail "Missing packages: $missing"
+        case "$pm" in
+            apt) d_fix "sudo apt-get install -y $missing    (or: psm setup)" ;;
+            dnf) d_fix "sudo dnf install -y $missing    (or: psm setup)" ;;
+            *)   d_fix "install $missing with your package manager" ;;
+        esac
+    fi
+    if command -v secret-tool >/dev/null 2>&1; then
+        d_info "secret-tool found: the Secret Service is tried before keepassxc-cli"
+    fi
+}
+
+doctor_install() {
+    d_section "Install"
+    local self found real
+    self=$(psm_self)
+    found=$(type -P psm || true)
+    if [[ -z "$found" ]]; then
+        d_fail "psm is not in PATH"
+        d_fix "sudo ln -s '$self' /usr/local/bin/psm    (or: $self setup)"
+        return 0
+    fi
+    real=$(readlink -f "$found")
+    if [[ "$real" == "$self" && -L "$found" ]]; then
+        d_ok "$found -> $self"
+    elif [[ "$real" == "$self" ]]; then
+        d_ok "$found"
+    elif [[ -L "$found" ]]; then
+        d_warn "$found points to $real, not to this copy ($self)"
+        d_fix "sudo ln -sfn '$self' '$found'"
+    else
+        d_warn "$found is a copy: a git pull in $(dirname "$self") does not update it"
+        d_fix "sudo ln -sfn '$self' '$found'"
+    fi
+}
+
+doctor_config() {
+    d_section "Config"
+    local placeholder=0
+    if [[ -z "${PSM_CONFIG_LOADED:-}" ]]; then
+        d_fail "No config file (~/.config/psm/config, ~/.psmrc or \$PSM_CONFIG)"
+        d_fix "psm setup"
+        return 0
+    fi
+    d_ok "Config file: $PSM_CONFIG_LOADED"
+    if [[ "$PSMP_HOST" == psmp.example.com ]]; then
+        d_fail "PSMP_HOST is still the placeholder (psmp.example.com)"
+        d_fix "edit $PSM_CONFIG_LOADED"
+        placeholder=1
+    fi
+    if [[ "$VAULT_USER" == your.vault.user || "$VAULT_USER" == first.last ]]; then
+        d_fail "VAULT_USER is still the placeholder ($VAULT_USER)"
+        d_fix "edit $PSM_CONFIG_LOADED"
+        placeholder=1
+    fi
+    if (( ! placeholder )); then
+        d_ok "PSMP_HOST=$PSMP_HOST, VAULT_USER=$VAULT_USER"
+    fi
+}
+
+doctor_kdbx() {
+    d_section "KeePassXC"
+    if [[ -f "$KDBX_PATH" && -r "$KDBX_PATH" ]]; then
+        d_ok "Database: $KDBX_PATH"
+    else
+        d_fail "Database not found or not readable: $KDBX_PATH"
+        d_fix "psm setup    (creates it), or set KDBX_PATH in the config"
+    fi
+}
+
+doctor_gpg() {
+    d_section "GnuPG"
+    if ! command -v gpg >/dev/null 2>&1; then
+        d_fail "gpg is not installed"
+        return 0
+    fi
+    local f="$GPG_MASTER_FILE" mode ids secret id found=""
+    if [[ ! -f "$f" ]]; then
+        d_fail "Master password file not found: $f"
+        d_fix "psm setup"
+    else
+        mode=$(stat -c %a "$f" 2>/dev/null || echo '?')
+        if [[ "$mode" == 600 || "$mode" == 400 ]]; then
+            d_ok "$f (mode $mode)"
+        else
+            d_warn "$f has mode $mode, expected 600"
+            d_fix "chmod 600 $f"
+        fi
+        if gpg_is_symmetric "$f"; then
+            d_ok "Encrypted with a passphrase (symmetric)"
+        else
+            ids=$(gpg_recipient_keyids "$f")
+            secret=$(gpg_secret_keyids)
+            for id in $ids; do
+                if grep -qxF "$id" <<< "$secret"; then
+                    found="$id"
+                    break
+                fi
+            done
+            if [[ -n "$found" ]]; then
+                d_ok "Encrypted for one of your secret keys ($found)"
+            elif [[ -z "$ids" ]]; then
+                d_fail "Not a GPG encrypted file: $f"
+                d_fix "move it away, then run psm setup"
+            else
+                d_fail "Encrypted for ${ids//$'\n'/, }, but none of your secret keys matches"
+                d_fix "gpg --list-secret-keys; if the key is gone, move $f away and run psm setup"
+            fi
+        fi
+    fi
+    if [[ -n "${GPG_TTY:-}" ]]; then
+        d_ok "GPG_TTY=$GPG_TTY"
+    else
+        d_warn "GPG_TTY is not set: pinentry may not be able to ask for the passphrase"
+        d_fix "export GPG_TTY=\$(tty)    (the psm block of ~/.bashrc does it)"
+    fi
+    local conf="${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf" ttl max
+    ttl=$(awk '$1 == "default-cache-ttl" { v = $2 } END { print v }' "$conf" 2>/dev/null || true)
+    max=$(awk '$1 == "max-cache-ttl" { v = $2 } END { print v }' "$conf" 2>/dev/null || true)
+    d_info "Passphrase cache: ${ttl:-600}s after last use, ${max:-7200}s max (gpg-agent.conf)"
+}
+
+doctor_ssh_agent() {
+    d_section "ssh-agent"
+    local distro rc=0 sock="${SSH_AUTH_SOCK:-}"
+    distro=$(distro_agent_socket)
+    if [[ -f "$HOME/.config/systemd/user/ssh-agent.service" && -n "$distro" ]]; then
+        d_warn "~/.config/systemd/user/ssh-agent.service hides the distro unit of the same name"
+        d_fix "systemctl --user disable --now ssh-agent.service; rm ~/.config/systemd/user/ssh-agent.service; systemctl --user daemon-reload; systemctl --user restart ssh-agent.socket"
+    fi
+    if ! command -v ssh-add >/dev/null 2>&1; then
+        d_fail "ssh-add is not installed"
+        return 0
+    fi
+    ssh-add -l >/dev/null 2>&1 || rc=$?
+    if [[ -z "$sock" ]]; then
+        d_fail "SSH_AUTH_SOCK is not set"
+    elif [[ ! -S "$sock" ]]; then
+        d_fail "SSH_AUTH_SOCK points to a socket that does not exist: $sock"
+    elif (( rc == 2 )); then
+        d_fail "No agent answers on $sock"
+    elif (( rc == 1 )); then
+        d_warn "The agent answers on $sock, but no key is loaded"
+        d_fix "ssh-add    (or: ssh-add ~/.ssh/<key registered on the PSMP>)"
+        return 0
+    else
+        d_ok "Agent on $sock, $(ssh-add -l 2>/dev/null | wc -l) key(s) loaded"
+        return 0
+    fi
+    if [[ -n "$distro" ]]; then
+        d_fix "systemctl --user enable --now ssh-agent.socket; export SSH_AUTH_SOCK=\"$distro\""
+    elif grep -qxF -- "$PSM_BASHRC_BEGIN" "$HOME/.bashrc" 2>/dev/null; then
+        d_fix "open a new terminal, or run: source ~/.bashrc    (the psm block finds or starts an agent)"
+    else
+        d_fix "psm setup    (adds a ~/.bashrc block that finds or starts an agent)"
+    fi
+}
+
+doctor_bashrc() {
+    d_section "Shell (~/.bashrc)"
+    local rc="$HOME/.bashrc" lines l
+    if [[ -f "$rc" ]] && grep -qxF -- "$PSM_BASHRC_BEGIN" "$rc"; then
+        if [[ "$(bashrc_render "$rc" 2>/dev/null)" == "$(cat "$rc")" ]]; then
+            d_ok "psm block present (ssh-agent detection, GPG_TTY, completion)"
+        else
+            d_warn "The psm block is outdated or damaged"
+            d_fix "psm setup"
+        fi
+    else
+        d_warn "No psm block in ~/.bashrc (ssh-agent detection, GPG_TTY, completion)"
+        d_fix "psm setup"
+    fi
+    lines=$(bashrc_legacy_lines "$rc")
+    if [[ -n "$lines" ]]; then
+        d_warn "Lines outside the psm block do the same job and can conflict with it:"
+        while IFS= read -r l; do
+            printf '       %s\n' "$l"
+        done <<< "$lines"
+        d_fix "psm setup    (offers to comment them out)"
+    fi
+}
+
+doctor_network() {
+    d_section "Network"
+    if [[ "$PSMP_HOST" == psmp.example.com ]]; then
+        d_info "PSMP_HOST not set, skipped"
+        return 0
+    fi
+    if ! timeout 3 getent hosts "$PSMP_HOST" >/dev/null 2>&1; then
+        d_warn "$PSMP_HOST does not resolve (VPN down? DNS?)"
+        return 0
+    fi
+    if timeout 3 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$PSMP_HOST" "${PORT:-22}" 2>/dev/null; then
+        d_ok "$PSMP_HOST:${PORT:-22} answers"
+    else
+        d_warn "$PSMP_HOST:${PORT:-22} does not answer (VPN down? firewall?)"
+    fi
+}
+
+run_doctor() {
+    if (( $# > 0 )); then
+        err "Usage: psm doctor"
+        return 2
+    fi
+    DOC_FAILS=0
+    DOC_WARNS=0
+    doctor_packages
+    doctor_install
+    doctor_config
+    doctor_kdbx
+    doctor_gpg
+    doctor_ssh_agent
+    doctor_bashrc
+    doctor_network
+    printf '\n'
+    if (( DOC_FAILS > 0 )); then
+        printf '%s%d problem(s)%s, %d warning(s)\n' "$C_RED" "$DOC_FAILS" "$C_RST" "$DOC_WARNS"
+        return 1
+    fi
+    printf '%sNo problem found%s, %d warning(s)\n' "$C_GRN" "$C_RST" "$DOC_WARNS"
+}
+
+# =============================================================================
+# psm setup: guided installation. Every step checks first, asks before
+# changing anything, and does nothing when it is already done.
+# =============================================================================
+s_step() { printf '\n%s== %s ==%s\n' "$C_CYN" "$*" "$C_RST"; }
+
+confirm() {
+    local ans
+    read -r -p "$1 [Y/n] " ans || return 1
+    [[ -z "$ans" || "$ans" == [YyOo]* ]]
+}
+
+# ask_value VAR "prompt" [default] [required=1]
+ask_value() {
+    local __ans __def="${3:-}"
+    while :; do
+        read -r -p "$2${__def:+ [${__def/#$HOME/\~}]}: " __ans || return 1
+        __ans="${__ans:-$__def}"
+        if [[ -n "$__ans" || "${4:-0}" != 1 ]]; then
+            break
+        fi
+        warn "A value is required"
+    done
+    [[ "$__ans" == "~/"* ]] && __ans="$HOME/${__ans#\~/}"
+    printf -v "$1" '%s' "$__ans"
+}
+
+as_root() {
+    if (( EUID == 0 )); then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+setup_packages() {
+    s_step "Packages"
+    local missing pm
+    local -a pkgs
+    missing=$(missing_packages)
+    if [[ -z "$missing" ]]; then
+        d_ok "All the required packages are installed"
+        return 0
+    fi
+    pm=$(detect_pkg_manager)
+    if [[ -z "$pm" ]]; then
+        err "No apt-get or dnf: install these packages by hand: $missing"
+        return 1
+    fi
+    if ! confirm "Install $missing (sudo $pm)?"; then
+        err "psm cannot work without: $missing"
+        return 1
+    fi
+    read -ra pkgs <<< "$missing"
+    if [[ "$pm" == apt ]]; then
+        as_root apt-get update -q && as_root apt-get install -y "${pkgs[@]}" || return 1
+    else
+        as_root dnf install -y "${pkgs[@]}" || return 1
+    fi
+    missing=$(missing_packages)
+    if [[ -n "$missing" ]]; then
+        err "Still missing: $missing"
+        return 1
+    fi
+    d_ok "Packages installed"
+}
+
+setup_link() {
+    s_step "psm command"
+    local self link="/usr/local/bin/psm" current
+    self=$(psm_self)
+    if [[ "$self" == "$link" ]]; then
+        warn "This is the installed copy: run setup from the clone (./psm setup) to replace it with a link"
+        return 0
+    fi
+    current=$(readlink -f "$link" 2>/dev/null || true)
+    if [[ -L "$link" && "$current" == "$self" ]]; then
+        d_ok "$link -> $self"
+        return 0
+    fi
+    if [[ -L "$link" ]]; then
+        warn "$link points to ${current:-a missing file}"
+        confirm "Point it to $self?" || return 0
+    elif [[ -e "$link" ]]; then
+        warn "$link is a copy: a git pull does not update it"
+        confirm "Replace it with a link to $self?" || return 0
+    elif ! confirm "Create the link $link -> $self (sudo)?"; then
+        warn "Skipped: add $(dirname "$self") to your PATH yourself"
+        return 0
+    fi
+    if [[ -w "$(dirname "$link")" ]]; then
+        ln -sfn "$self" "$link"
+    else
+        as_root ln -sfn "$self" "$link"
+    fi && d_ok "$link -> $self"
+}
+
+setup_config() {
+    s_step "Config"
+    if [[ -n "$PSM_CONFIG_LOADED" ]]; then
+        d_ok "Config file: $PSM_CONFIG_LOADED"
+        if [[ "$PSMP_HOST" == psmp.example.com || "$VAULT_USER" == your.vault.user || "$VAULT_USER" == first.last ]]; then
+            warn "It still holds placeholders: edit $PSM_CONFIG_LOADED"
+        fi
+        return 0
+    fi
+    local cfg="$HOME/.config/psm/config" def_host="" def_user=""
+    info "No config file yet: creating $cfg"
+    if [[ "$PSMP_HOST" != psmp.example.com ]]; then def_host="$PSMP_HOST"; fi
+    if [[ "$VAULT_USER" != your.vault.user ]]; then def_user="$VAULT_USER"; fi
+    ask_value PSMP_HOST  "PSMP address" "$def_host" 1 || return 1
+    ask_value VAULT_USER "CyberArk vault user" "$def_user" 1 || return 1
+    ask_value KDBX_PATH  "KeePassXC database" "$KDBX_PATH" 1 || return 1
+    ask_value KDBX_GROUP "KeePassXC group of the psm entries" "$KDBX_GROUP" 1 || return 1
+    ask_value LDAP_USER  "Personal LDAP/AD accounts, one entry for all servers (space-separated, optional)" "$LDAP_USER" || return 1
+    write_config "$cfg"
+    PSM_CONFIG_LOADED="$cfg"
+    d_ok "Written: $cfg"
+}
+
+setup_ssh_agent() {
+    s_step "ssh-agent"
+    local rc=0 distro sock keys
+    local unit_dir="$HOME/.config/systemd/user"
+    distro=$(distro_agent_socket)
+    if [[ -f "$unit_dir/ssh-agent.service" && -n "$distro" ]]; then
+        warn "$unit_dir/ssh-agent.service hides the distro unit of the same name (older WSL2 guide)"
+        if confirm "Disable and remove it?"; then
+            systemctl --user disable --now ssh-agent.service 2>/dev/null || true
+            rm -f "$unit_dir/ssh-agent.service"
+            systemctl --user daemon-reload || true
+            systemctl --user restart ssh-agent.socket 2>/dev/null || true
+        fi
+    fi
+
+    ssh-add -l >/dev/null 2>&1 || rc=$?
+    if (( rc != 2 )); then
+        d_ok "Agent on $SSH_AUTH_SOCK"
+    else
+        sock=$(find_agent_socket)
+        if [[ -n "$sock" ]]; then
+            d_ok "Agent found on $sock (new shells use it through the ~/.bashrc block)"
+            export SSH_AUTH_SOCK="$sock"
+        elif [[ -n "$distro" ]] && systemd_user_ok; then
+            if confirm "Enable the distro agent (systemctl --user enable --now ssh-agent.socket)?"; then
+                systemctl --user enable --now ssh-agent.socket && export SSH_AUTH_SOCK="$distro"
+            fi
+        elif systemd_user_ok; then
+            if confirm "Create a systemd user service for ssh-agent (psm-ssh-agent.service)?"; then
+                mkdir -p "$unit_dir"
+                cat > "$unit_dir/psm-ssh-agent.service" <<'EOF'
+[Unit]
+Description=SSH authentication agent (psm)
+
+[Service]
+Type=simple
+Environment=SSH_AUTH_SOCK=%t/psm-ssh-agent.sock
+ExecStart=/usr/bin/ssh-agent -D -a $SSH_AUTH_SOCK
+
+[Install]
+WantedBy=default.target
+EOF
+                systemctl --user daemon-reload \
+                    && systemctl --user enable --now psm-ssh-agent.service \
+                    && export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/psm-ssh-agent.sock"
+            fi
+        else
+            # Same agent as the one the ~/.bashrc block starts in new shells
+            info "No systemd user session: starting an agent on ~/.ssh/psm-agent.sock"
+            mkdir -p -m 700 "$HOME/.ssh"
+            rm -f "$HOME/.ssh/psm-agent.sock"
+            local agent_env
+            if agent_env=$(ssh-agent -s -a "$HOME/.ssh/psm-agent.sock"); then
+                eval "$agent_env" >/dev/null
+            else
+                warn "ssh-agent failed to start"
+            fi
+        fi
+        rc=0
+        ssh-add -l >/dev/null 2>&1 || rc=$?
+    fi
+
+    if (( rc == 0 )); then
+        d_ok "$(ssh-add -l 2>/dev/null | wc -l) key(s) loaded"
+    elif (( rc == 1 )); then
+        keys=$(find "$HOME/.ssh" -maxdepth 1 -name 'id_*' ! -name '*.pub' 2>/dev/null || true)
+        if [[ -n "$keys" ]]; then
+            info "Keys in ~/.ssh: $(tr '\n' ' ' <<< "$keys")"
+            if confirm "Load them now (ssh-add)?"; then
+                ssh-add || warn "ssh-add failed"
+            fi
+        else
+            info "No key in ~/.ssh: psm will use the vault password (KeePassXC entry $VAULT_PASS_ENTRY)"
+        fi
+    fi
+}
+
+setup_gpg() {
+    s_step "GnuPG"
+    local keys home conf pe
+    local -a add=()
+    keys=$(gpg_encrypt_keys)
+    if [[ -n "$keys" ]]; then
+        d_ok "$(wc -l <<< "$keys") GPG key(s) that can encrypt"
+    else
+        warn "No GPG key that can encrypt in your keyring"
+        if confirm "Create one now (gpg --full-generate-key)?"; then
+            gpg --full-generate-key || true
+        fi
+        [[ -n "$(gpg_encrypt_keys)" ]] || warn "Without a GPG key, the master password file cannot be created"
+    fi
+
+    home="${GNUPGHOME:-$HOME/.gnupg}"
+    conf="$home/gpg-agent.conf"
+    # Terminal pinentry: WSL, or no graphical session
+    if [[ -n "${WSL_DISTRO_NAME:-}" || ( -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ) ]] \
+       && ! grep -q '^[[:space:]]*pinentry-program' "$conf" 2>/dev/null; then
+        pe=$(command -v pinentry-curses || true)
+        [[ -n "$pe" ]] && add+=("pinentry-program $pe")
+    fi
+    grep -q '^[[:space:]]*default-cache-ttl' "$conf" 2>/dev/null || add+=("default-cache-ttl 28800")
+    grep -q '^[[:space:]]*max-cache-ttl' "$conf" 2>/dev/null || add+=("max-cache-ttl 86400")
+    if (( ${#add[@]} == 0 )); then
+        d_ok "gpg-agent.conf: nothing to add"
+        return 0
+    fi
+    info "Suggested gpg-agent settings (terminal pinentry, passphrase cached 8 h, 24 h max):"
+    printf '         %s\n' "${add[@]}" >&2
+    if confirm "Add them to $conf?"; then
+        mkdir -p -m 700 "$home"
+        printf '%s\n' "${add[@]}" >> "$conf"
+        chmod 600 "$conf"
+        gpgconf --reload gpg-agent 2>/dev/null || true
+        d_ok "gpg-agent.conf updated"
+    fi
+}
+
+# Runs keepassxc-cli with the master password on stdin: $1 if set, otherwise
+# decrypted from GPG_MASTER_FILE. The password never goes on a command line.
+kdbx_cmd() {
+    local pw="$1"
+    shift
+    if [[ -n "$pw" ]]; then
+        printf '%s' "$pw" | keepassxc-cli "$@"
+    else
+        gpg -qd "$GPG_MASTER_FILE" 2>/dev/null | keepassxc-cli "$@"
+    fi
+}
+
+setup_master() {
+    s_step "KeePassXC database and master password"
+    local pw="" pw2 keys n choice fpr uid i
+    if [[ -f "$KDBX_PATH" ]]; then
+        d_ok "Database: $KDBX_PATH"
+    else
+        if ! confirm "Create the KeePassXC database $KDBX_PATH?"; then
+            warn "Skipped"
+            return 0
+        fi
+        while :; do
+            read -rs -p "New master password: " pw; printf '\n' >&2
+            read -rs -p "Same again: " pw2; printf '\n' >&2
+            [[ -n "$pw" && "$pw" == "$pw2" ]] && break
+            warn "Empty or different, try again"
+        done
+        pw2=""
+        mkdir -p "$(dirname "$KDBX_PATH")"
+        if ! printf '%s\n%s\n' "$pw" "$pw" | keepassxc-cli db-create -q -p "$KDBX_PATH" >/dev/null 2>&1; then
+            err "keepassxc-cli db-create failed"
+            return 1
+        fi
+        d_ok "Database created: $KDBX_PATH"
+    fi
+
+    if [[ -f "$GPG_MASTER_FILE" ]]; then
+        d_ok "Master password file: $GPG_MASTER_FILE (psm doctor checks its key)"
+    else
+        keys=$(gpg_encrypt_keys)
+        if [[ -z "$keys" ]]; then
+            warn "No GPG key: $GPG_MASTER_FILE not created"
+            return 0
+        fi
+        confirm "Store the master password in $GPG_MASTER_FILE, encrypted with your GPG key?" || return 0
+        if [[ -z "$pw" ]]; then
+            for i in 1 2 3; do
+                read -rs -p "Master password of $KDBX_PATH: " pw; printf '\n' >&2
+                printf '%s' "$pw" | keepassxc-cli ls -q "$KDBX_PATH" >/dev/null 2>&1 && break
+                warn "Wrong password"
+                pw=""
+            done
+            if [[ -z "$pw" ]]; then
+                err "Giving up after 3 attempts"
+                return 1
+            fi
+        fi
+        n=$(wc -l <<< "$keys")
+        choice=1
+        if (( n > 1 )); then
+            i=0
+            while IFS=$'\t' read -r fpr uid; do
+                i=$((i + 1))
+                printf '  %d) %s  (%s)\n' "$i" "$uid" "${fpr: -16}" >&2
+            done <<< "$keys"
+            while :; do
+                read -r -p "GPG key to use [1]: " choice
+                choice="${choice:-1}"
+                [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )) && break
+            done
+        fi
+        IFS=$'\t' read -r fpr uid <<< "$(sed -n "${choice}p" <<< "$keys")"
+        # --trust-model always: the recipient is one of the user's own secret keys
+        if (umask 077; printf '%s' "$pw" \
+                | gpg --batch --yes -q --trust-model always --encrypt --recipient "$fpr" -o "$GPG_MASTER_FILE"); then
+            chmod 600 "$GPG_MASTER_FILE"
+            d_ok "Written: $GPG_MASTER_FILE (for $uid)"
+        else
+            err "gpg --encrypt failed"
+            pw=""
+            return 1
+        fi
+    fi
+
+    if kdbx_cmd "$pw" ls -q "$KDBX_PATH" "$KDBX_GROUP" >/dev/null 2>&1; then
+        d_ok "Group $KDBX_GROUP found in the database"
+    elif confirm "Create the group $KDBX_GROUP in the database?"; then
+        if kdbx_cmd "$pw" mkdir -q "$KDBX_PATH" "$KDBX_GROUP" >/dev/null 2>&1; then
+            d_ok "Group $KDBX_GROUP created"
+        else
+            err "Could not create the group $KDBX_GROUP"
+        fi
+    fi
+    pw=""
+}
+
+setup_bashrc() {
+    s_step "~/.bashrc"
+    local rc="$HOME/.bashrc" new legacy backed_up=0
+    new=$(bashrc_render "$rc") || return 1
+    if [[ -f "$rc" && "$new" == "$(cat "$rc")" ]]; then
+        d_ok "psm block up to date"
+    else
+        info "psm block for $rc:"
+        bashrc_block | sed 's/^/         /' >&2
+        if confirm "Write it?"; then
+            if [[ -f "$rc" ]]; then
+                cp -p "$rc" "$rc.psm-backup"
+                backed_up=1
+            fi
+            printf '%s\n' "$new" > "$rc"
+            if (( backed_up )); then
+                d_ok "Written (previous version: $rc.psm-backup)"
+            else
+                d_ok "Written: $rc"
+            fi
+        fi
+    fi
+
+    legacy=$(bashrc_legacy_lines "$rc")
+    [[ -n "$legacy" ]] || return 0
+    warn "These lines outside the psm block do the same job and can conflict with it:"
+    sed 's/^/         /' <<< "$legacy" >&2
+    confirm "Comment them out?" || return 0
+    new=$(bashrc_comment_legacy "$rc")
+    if ! bash -n <<< "$new" 2>/dev/null; then
+        warn "Commenting them out would break the syntax of $rc: edit it by hand"
+        return 0
+    fi
+    (( backed_up )) || cp -p "$rc" "$rc.psm-backup"
+    printf '%s\n' "$new" > "$rc"
+    d_ok "Commented out (previous version: $rc.psm-backup)"
+}
+
+run_setup() {
+    if (( $# > 0 )); then
+        err "Usage: psm setup"
+        return 2
+    fi
+    if [[ ! -t 0 ]]; then
+        err "psm setup asks questions: run it from a terminal"
+        return 2
+    fi
+    export GPG_TTY="${GPG_TTY:-$(tty)}"
+    info "Each step checks first and asks before changing anything."
+    setup_packages || return 1
+    setup_link
+    setup_config || return 1
+    setup_ssh_agent
+    setup_gpg
+    setup_master || true
+    setup_bashrc || true
+    s_step "psm doctor"
+    run_doctor || true
+    printf '\n'
+    info "Open a new terminal (or run: source ~/.bashrc) to load the ~/.bashrc changes"
+}
+
+# =============================================================================
 # Entry point
 # =============================================================================
 main() {
@@ -712,6 +1571,15 @@ main() {
         warn "Leftover secrets found in the environment (previous session did not exit cleanly) — purging"
         unset VAULT_PASS TARGET_PASS
     fi
+
+    # doctor and setup run before check_deps: they report or install the
+    # missing dependencies. Called in a `||` list, so `set -e` does not
+    # stop them at the first failed check.
+    local sub_rc=0
+    case "${1:-}" in
+        doctor) shift; run_doctor "$@" || sub_rc=$?; exit "$sub_rc" ;;
+        setup)  shift; run_setup "$@"  || sub_rc=$?; exit "$sub_rc" ;;
+    esac
 
     check_deps
 
