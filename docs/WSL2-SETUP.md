@@ -7,6 +7,27 @@ persistent `ssh-agent` and `gpg-agent`, using the keepassxc-cli + GPG mode
 Tested on **Ubuntu 22.04 / 24.04** and **Fedora** under WSL2. The `apt`
 commands apply to Ubuntu/Debian; use `dnf` instead on Fedora.
 
+## Quick path: `psm setup`
+
+After the WSL2 prerequisites (section 1):
+
+```bash
+git clone https://github.com/clementgineste/psm-ssh.git ~/psm-ssh
+~/psm-ssh/psm setup
+```
+
+`psm setup` runs sections 2 to 9 of this guide, and asks before each change:
+packages, `/usr/local/bin/psm` link, config, ssh-agent, gpg-agent, KeePassXC
+database, `~/.psm-master.gpg` and a block in `~/.bashrc`. It ends with
+`psm doctor`, and running it again changes nothing. Without systemd, the
+`~/.bashrc` block starts an agent on `~/.ssh/psm-agent.sock` when no other
+agent answers.
+
+`psm doctor` checks everything without changing anything, and prints the
+command that fixes each problem. Run it first when something goes wrong.
+
+The rest of this guide explains each step, for a manual install.
+
 ---
 
 ## 1. WSL2 prerequisites
@@ -387,14 +408,9 @@ calls: silent (gpg-agent cache).
 ```bash
 cd ~
 git clone https://github.com/clementgineste/psm-ssh.git
-cd psm-ssh
-chmod +x psm
 
-# Option 1: install into /usr/local/bin (system-wide)
-sudo install -m 755 psm /usr/local/bin/psm
-
-# Option 2: add to the PATH (per user)
-echo 'export PATH="$HOME/psm-ssh:$PATH"' >> ~/.bashrc
+# Link (not copy) into /usr/local/bin: a git pull in ~/psm-ssh updates psm
+sudo ln -s ~/psm-ssh/psm /usr/local/bin/psm
 ```
 
 ### Enable the git hooks (if you contribute)
@@ -476,6 +492,9 @@ Expected output:
 ---
 
 ## 11. Troubleshooting
+
+Start with `psm doctor`: it checks the whole chain and prints a fix for
+each problem it finds.
 
 ### `ssh-add -l` → "Could not open a connection to your authentication agent"
 

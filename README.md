@@ -124,19 +124,39 @@ in `LDAP_USER`: a single KeePassXC lookup is then enough for each connection.
 
 ## Installation
 
-For **WSL2** (full setup with ssh-agent, gpg-agent and KeePassXC CLI), see
-[`docs/WSL2-SETUP.md`](docs/WSL2-SETUP.md), a step-by-step guide.
-
-Other environments:
-
 ```bash
-git clone https://github.com/clementgineste/psm-ssh.git
-cd psm-ssh
-chmod +x psm
-sudo install -m 755 psm /usr/local/bin/psm
+git clone https://github.com/clementgineste/psm-ssh.git ~/psm-ssh
+~/psm-ssh/psm setup
 ```
 
-Or just add the repo to your `PATH`.
+`psm setup` goes through the whole installation for the GPG + keepassxc-cli
+mode, and asks before each change:
+
+1. Installs the missing packages with `apt-get` or `dnf` (sudo).
+2. Links `/usr/local/bin/psm` to the clone, so a `git pull` updates `psm`.
+3. Creates `~/.config/psm/config` (PSMP, vault user, database, group, LDAP accounts).
+4. ssh-agent: enables the distro agent (`ssh-agent.socket`) when there is one,
+   otherwise creates `psm-ssh-agent.service`, then offers to load your keys.
+5. GnuPG: offers to create a key, and to set a terminal pinentry and an 8 h
+   passphrase cache in `gpg-agent.conf`.
+6. Creates the KeePassXC database and its group if needed, and
+   `~/.psm-master.gpg`, encrypted with your GPG key.
+7. Adds a block to `~/.bashrc` (ssh-agent detection, `GPG_TTY`, completion),
+   and offers to comment out older lines that do the same job.
+
+It ends with `psm doctor`. Running it again changes nothing.
+
+`psm doctor` checks the installation without changing anything: packages,
+link, config, database, master password file and its GPG key, `GPG_TTY`,
+ssh-agent, `~/.bashrc` block, and whether the PSMP answers. It prints one
+line per check, and the command that fixes each problem. Its exit code is 1
+when it finds a problem (`[FAIL]`), 0 otherwise.
+
+For **WSL2**, [`docs/WSL2-SETUP.md`](docs/WSL2-SETUP.md) explains each step
+and how to do it by hand.
+
+Manual install: clone the repo, then `sudo ln -s ~/psm-ssh/psm /usr/local/bin/psm`
+(a link rather than a copy, so that `git pull` is enough to update).
 
 ### Git hooks (contributors)
 
@@ -157,6 +177,8 @@ domains, ID formats, etc.) and must never be committed. The `pre-commit`
 hook does nothing until this file exists.
 
 ### Bash completion
+
+`psm setup` loads it from the `~/.bashrc` block. By hand:
 
 ```bash
 # In ~/.bashrc
@@ -278,6 +300,8 @@ psm -p 2222 admin@srv-prod01      # custom SSH port
 psm -v other.user admin@host      # override the vault user
 psm -l                            # list the targets in KeePassXC
 psm -h                            # help
+psm doctor                        # check the installation
+psm setup                         # guided installation
 ```
 
 **Bare `host` syntax (no user)**: if the user for this host is set in
@@ -429,6 +453,7 @@ psm admin@srv-prod01
 | Code  | Cause                                              |
 |-------|----------------------------------------------------|
 | 0     | Session ended normally                             |
+| 1     | `psm doctor` found a problem; `psm setup` stopped (packages or config) |
 | 2     | Usage error (arguments, options)                   |
 | 3     | Password retrieval failed                          |
 | 10    | Vault password required but not available         |
@@ -460,6 +485,8 @@ as is (so it can overlap with the codes above).
   `/` (e.g. `-o Foo=a:b`, rare) can be mistaken for the remote target; use
   `scp` directly in that case.
 - **`psm cp`** does not support remote-to-remote transfers (a single PSMP target).
+- `cp`, `doctor` and `setup` are subcommands: to reach a host with one of
+  these names, use `user@host`.
 
 ## License
 
