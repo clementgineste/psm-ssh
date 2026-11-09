@@ -291,6 +291,15 @@ parse_scp_args() {
 # =============================================================================
 # Target resolution + credential fetch
 # =============================================================================
+
+# First IPv4 address of a host (/etc/hosts + DNS), or nothing.
+# ahostsv4 asks for A records only: `getent hosts` asks AAAA first, may return
+# an IPv6 address, and waits for the resolver timeout before trying A when
+# the DNS ignores AAAA queries (13 s seen behind a corporate VPN).
+resolve_ipv4() {
+    timeout 2 getent ahostsv4 "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'
+}
+
 resolve_target() {
     # Single-shot per invocation: the R_* globals are not reset on entry (only
     # R_PSMP_HOST is re-initialized). Do not call this in a loop without an exit
@@ -347,9 +356,9 @@ resolve_target() {
     fi
     # 2. /etc/hosts + DNS (2s timeout to avoid hanging)
     if [[ ! "$target_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        debug "DNS resolution: getent hosts $target_host (2s timeout)"
+        debug "DNS resolution: getent ahostsv4 $target_host (2s timeout)"
         local ip
-        ip=$(timeout 2 getent hosts "$target_host" 2>/dev/null | awk '{print $1}') || true
+        ip=$(resolve_ipv4 "$target_host") || true
         if [[ -n "$ip" ]]; then
             target_host="$ip"
         else

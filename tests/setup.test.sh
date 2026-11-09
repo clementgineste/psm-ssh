@@ -350,8 +350,9 @@ mkdir -p "$STUBS/net"
 cat > "$STUBS/net/getent" <<'EOF'
 #!/bin/sh
 case "$1" in
-    hosts)  sleep 5; echo "10.0.0.1        $2" ;;   # slow AAAA, then A
-    ahosts) echo "10.0.0.1        STREAM $2" ;;
+    hosts)    sleep 5; echo "fd00::1         $2" ;;   # slow AAAA, IPv6 first
+    ahosts)   echo "10.0.0.1        STREAM $2" ;;
+    ahostsv4) printf '10.0.0.1        STREAM %s\n10.0.0.1        DGRAM\n' "$2" ;;
     *)      exit 2 ;;
 esac
 EOF
@@ -359,6 +360,8 @@ chmod +x "$STUBS/net/getent"
 out=$(PATH="$STUBS/net:$PATH" PSMP_HOST=psmp.test.example PORT=1 doctor_network)
 [[ "$out" != *"does not resolve"* ]]
 assert_eq "doctor network: resolves like ssh, not slowed by AAAA" "0" "$?"
+assert_eq "target resolution: IPv4 only, one address, no AAAA wait" "10.0.0.1" \
+    "$(PATH="$STUBS/net:$PATH" resolve_ipv4 srv-prod01)"
 
 if (( fails )); then
     echo "== FAILED =="
