@@ -186,6 +186,136 @@ assert_contains "doctor config: placeholder host"  "[FAIL] PSMP_HOST is still th
 assert_contains "doctor config: placeholder user"  "[FAIL] VAULT_USER is still the placeholder" "$out"
 assert_contains "doctor config: 2 failures"        "fails=2" "$out"
 
+# --- doctor: main [FAIL] cases --------------------------------------------------
+out=$(PATH="$STUBS/apt" doctor_packages; echo "fails=$DOC_FAILS")
+assert_contains "doctor packages: missing is a FAIL"  "[FAIL] Missing packages: openssh-client" "$out"
+assert_contains "doctor packages: apt fix"            "fix: sudo apt-get install -y openssh-client" "$out"
+assert_contains "doctor packages: failure counted"    "fails=1" "$out"
+
+out=$(KDBX_PATH="$WORK/no-such.kdbx" doctor_kdbx; echo "fails=$DOC_FAILS")
+assert_contains "doctor kdbx: missing database is a FAIL" "[FAIL] Database not found" "$out"
+assert_contains "doctor kdbx: failure counted"            "fails=1" "$out"
+
+# Real gpg-connect-agent exits 0 with or without an agent: only the D line differs.
+# It writes "OK" after the D line: a `| grep -q` would stop reading, the late
+# write gets SIGPIPE, and pipefail turns the match into a failure.
+gpg-connect-agent() { printf 'D 4242\n'; sleep 0.2; printf 'OK\n'; }
+out=$(GPG_MASTER_FILE="$WORK/no-such.gpg" doctor_gpg; echo "fails=$DOC_FAILS")
+assert_contains "doctor gpg: missing master file is a FAIL" "[FAIL] Master password file not found" "$out"
+assert_contains "doctor gpg: agent running"                 "[ OK ] gpg-agent is running" "$out"
+gpg-connect-agent() { echo "gpg-connect-agent: no gpg-agent running in this session" >&2; return 0; }
+out=$(GPG_MASTER_FILE="$WORK/no-such.gpg" doctor_gpg)
+assert_contains "doctor gpg: agent not running is only info" "[INFO] gpg-agent is not running" "$out"
+unset -f gpg-connect-agent
+
+foreign="$WORK/foreign.gpg"; : > "$foreign"; chmod 644 "$foreign"
+gpg() {
+    case "$*" in
+        *--list-packets*)     printf ':pubkey enc packet: version 3, algo 18, keyid 1111222233334444\n' ;;
+        *--list-secret-keys*) printf 'ssb:u:255:18:7845A76AAF98B403:1793983123::::::e:::+::cv25519::\n' ;;
+    esac
+}
+out=$(GPG_MASTER_FILE="$foreign" doctor_gpg; echo "fails=$DOC_FAILS")
+assert_contains "doctor gpg: mode 644 is a WARN"         "[WARN] $foreign has mode 644" "$out"
+assert_contains "doctor gpg: key not in the keyring"     "[FAIL] Encrypted for 1111222233334444" "$out"
+unset -f gpg
+
+# --- doctor: install, clone state shown even when psm is not in PATH ------------
+out=$(PATH=/usr/bin:/bin; psm_self() { echo "$WORK/clone-x/psm"; }; clone_state() { echo behind; }; doctor_install)
+assert_contains "doctor install: not in PATH"           "[FAIL] psm is not in PATH" "$out"
+assert_contains "doctor install: clone checked anyway"  "[WARN] Clone $WORK/clone-x is behind origin" "$out"
+
+# --- doctor: ssh keys present but not loaded -------------------------------------
+if command -v ssh-keygen >/dev/null 2>&1; then
+    mkdir -p "$HOME/.ssh"
+    ssh-keygen -q -t ed25519 -N '' -C loaded -f "$HOME/.ssh/id_ed25519" </dev/null
+    ssh-keygen -q -t ed25519 -N '' -C other  -f "$HOME/.ssh/id_other"   </dev/null
+    loaded_fp=$(ssh-keygen -lf "$HOME/.ssh/id_ed25519.pub" | awk '{print $2}')
+    ssh-add() { [[ "$1" == -l ]] && printf '256 %s loaded (ED25519)\n' "$loaded_fp"; }
+    assert_eq "unloaded keys: only the key missing from the agent" \
+        "$HOME/.ssh/id_other" "$(unloaded_ssh_keys)"
+    sock="$WORK/run/openssh_agent"   # live agent started by the block test above
+    if [[ -S "$sock" ]]; then
+        out=$(SSH_AUTH_SOCK="$sock" doctor_ssh_agent)
+        assert_contains "doctor ssh: lists keys not loaded" "~/.ssh/id_other" "$out"
+        ssh-add() { return 1; }
+        out=$(SSH_AUTH_SOCK="$sock" doctor_ssh_agent)
+        assert_contains "doctor ssh: no key loaded → fix names the keys" "fix: ssh-add ~/.ssh/id_ed25519 ~/.ssh/id_other" "$out"
+    else
+        printf 'skip - no live agent socket, doctor ssh key cases skipped\n'
+    fi
+    unset -f ssh-add
+    rm -f "$HOME"/.ssh/id_*
+fi
+
+# --- doctor: clone freshness (read-only, ls-remote) -------------------------------
+if command -v git >/dev/null 2>&1; then
+    g() { git -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main "$@"; }
+    g init -q "$WORK/src" && g -C "$WORK/src" commit -q --allow-empty -m one
+    g clone -q --bare "$WORK/src" "$WORK/origin.git"
+    g clone -q "$WORK/origin.git" "$WORK/clone"
+    g clone -q "$WORK/origin.git" "$WORK/other"
+    assert_eq "clone: up to date"               "current" "$(clone_state "$WORK/clone")"
+    g -C "$WORK/other" commit -q --allow-empty -m two && g -C "$WORK/other" push -q 2>/dev/null
+    assert_eq "clone: behind origin"            "behind"  "$(clone_state "$WORK/clone")"
+    g -C "$WORK/clone" pull -q 2>/dev/null && g -C "$WORK/clone" commit -q --allow-empty -m local
+    assert_eq "clone: local commits only"       "current" "$(clone_state "$WORK/clone")"
+    mkdir -p "$WORK/plain"
+    assert_eq "clone: not a git clone"          "none"    "$(clone_state "$WORK/plain")"
+    g -C "$WORK/clone" remote set-url origin "$WORK/gone.git"
+    assert_eq "clone: origin unreachable"       "unknown" "$(clone_state "$WORK/clone")"
+    unset -f g
+fi
+
+# --- doctor --deep (stubbed gpg and keepassxc-cli) ----------------------------------
+GPG_MASTER_FILE="$WORK/master.gpg"; : > "$GPG_MASTER_FILE"
+KDBX_PATH="$WORK/db.kdbx";          : > "$KDBX_PATH"
+KDBX_GROUP=PSM VAULT_PASS_ENTRY=VaultPassword
+gpg() { [[ "$*" == *-qd* && -n "$master" ]] && printf '%s' "$master"; }
+keepassxc-cli() {
+    local pw
+    IFS= read -r pw || true
+    [[ "$pw" == right ]] || return 1
+    case "$*" in
+        "ls -q $KDBX_PATH")     printf 'PSM/\n' ;;
+        "ls -q $KDBX_PATH PSM")    # missing group → rc 1; empty group → "[empty]" (translated)
+            (( kp_group )) || return 1
+            printf '%s\n' "${kp_entries:-[vide]}" ;;
+        *) return 1 ;;
+    esac
+}
+ssh-add() { return 1; }   # no key loaded
+kp_group=1
+master=right kp_entries=$'VaultPassword\nroot@srv-prod01'
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: database opened"        "[ OK ] Database opened" "$out"
+assert_contains "deep: group and entry count"  "[ OK ] Group PSM: 2 entries" "$out"
+assert_contains "deep: vault password entry"   "[ OK ] Vault password entry: PSM/VaultPassword" "$out"
+assert_contains "deep: no failure"             "fails=0" "$out"
+master=""
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: gpg cannot decrypt"     "[FAIL] Cannot decrypt" "$out"
+master=wrong
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: wrong master password"  "[FAIL] The password in $GPG_MASTER_FILE does not open" "$out"
+master=right kp_group=0
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: group missing"          "[FAIL] Group PSM not found" "$out"
+kp_group=1 kp_entries=""
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: empty group exists, 0 entries" "[ OK ] Group PSM: 0 entries" "$out"
+master=right kp_entries="root@srv-prod01"
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: no vault entry and no key" "[FAIL] No SSH key loaded and no PSM/VaultPassword entry" "$out"
+ssh-add() { return 0; }   # a key is loaded
+out=$(doctor_deep; echo "fails=$DOC_FAILS")
+assert_contains "deep: no vault entry, key loaded → info" "fails=0" "$out"
+unset -f gpg keepassxc-cli ssh-add
+
+# --- doctor: arguments ---------------------------------------------------------------
+run_doctor --bogus >/dev/null 2>&1
+assert_eq "doctor: unknown argument → rc 2" "2" "$?"
+
 if (( fails )); then
     echo "== FAILED =="
     exit 1

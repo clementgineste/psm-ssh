@@ -68,7 +68,8 @@ usage() {
     cat <<EOF
 Usage: psm [options] <targetuser@targethost|targethost> [command]
        psm [options] cp [scp-flags] SRC... DST
-       psm doctor      Check the installation (changes nothing)
+       psm doctor      Check the installation (changes nothing);
+                       --deep also opens the database (may ask the GPG passphrase)
        psm setup       Guided installation: packages, psm link, config,
                        ssh-agent, GPG, KeePassXC database, ~/.bashrc
 
@@ -884,6 +885,45 @@ find_agent_socket() {
     done
 }
 
+# Private keys of ~/.ssh whose public key is not loaded in the agent
+# (keys without a .pub file are skipped: they cannot be compared without
+# their passphrase)
+unloaded_ssh_keys() {
+    local loaded key fp
+    loaded=$(ssh-add -l 2>/dev/null | awk '{ print $2 }')
+    for key in "$HOME"/.ssh/id_*; do
+        [[ -f "$key" && "$key" != *.pub && -f "$key.pub" ]] || continue
+        fp=$(ssh-keygen -lf "$key.pub" 2>/dev/null | awk '{ print $2 }')
+        [[ -n "$fp" ]] || continue
+        grep -qxF -- "$fp" <<< "$loaded" || printf '%s\n' "$key"
+    done
+}
+
+# State of the git clone in DIR compared with its upstream branch:
+#   none (not a git clone), unknown (no upstream, or origin unreachable),
+#   current (HEAD contains the upstream tip), behind.
+# Read-only: asks origin for its tip with ls-remote, fetches nothing.
+clone_state() {
+    local dir="$1" up tip
+    if [[ ! -e "$dir/.git" ]] || ! command -v git >/dev/null 2>&1; then
+        echo none
+        return 0
+    fi
+    if ! up=$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
+        echo unknown
+        return 0
+    fi
+    tip=$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+          timeout 5 git -C "$dir" ls-remote -- "${up%%/*}" "refs/heads/${up#*/}" 2>/dev/null | cut -f1)
+    if [[ -z "$tip" ]]; then
+        echo unknown
+    elif git -C "$dir" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
+        echo current
+    else
+        echo behind
+    fi
+}
+
 # Key ids a GPG file is encrypted for (read from the packets, nothing is decrypted)
 gpg_recipient_keyids() {
     LC_ALL=C gpg --batch --list-only --list-packets -- "$1" 2>/dev/null \
@@ -942,16 +982,14 @@ doctor_packages() {
 
 doctor_install() {
     d_section "Install"
-    local self found real
+    local self found real=""
     self=$(psm_self)
     found=$(type -P psm || true)
+    [[ -n "$found" ]] && real=$(readlink -f "$found")
     if [[ -z "$found" ]]; then
         d_fail "psm is not in PATH"
         d_fix "sudo ln -s '$self' /usr/local/bin/psm    (or: $self setup)"
-        return 0
-    fi
-    real=$(readlink -f "$found")
-    if [[ "$real" == "$self" && -L "$found" ]]; then
+    elif [[ "$real" == "$self" && -L "$found" ]]; then
         d_ok "$found -> $self"
     elif [[ "$real" == "$self" ]]; then
         d_ok "$found"
@@ -962,6 +1000,14 @@ doctor_install() {
         d_warn "$found is a copy: a git pull in $(dirname "$self") does not update it"
         d_fix "sudo ln -sfn '$self' '$found'"
     fi
+    local dir
+    dir=$(dirname "$self")
+    case "$(clone_state "$dir")" in
+        current) d_ok "Clone $dir is up to date with origin" ;;
+        behind)  d_warn "Clone $dir is behind origin"
+                 d_fix "git -C '$dir' pull" ;;
+        unknown) d_info "Could not compare $dir with origin (offline, or no upstream branch)" ;;
+    esac
 }
 
 doctor_config() {
@@ -1044,6 +1090,13 @@ doctor_gpg() {
         d_warn "GPG_TTY is not set: pinentry may not be able to ask for the passphrase"
         d_fix "export GPG_TTY=\$(tty)    (the psm block of ~/.bashrc does it)"
     fi
+    # gpg-connect-agent exits 0 even with no agent: only a running one answers
+    # "D <pid>" (grep without -q: see gpg_is_symmetric)
+    if gpg-connect-agent --no-autostart 'GETINFO pid' /bye 2>/dev/null | grep '^D ' >/dev/null; then
+        d_ok "gpg-agent is running"
+    else
+        d_info "gpg-agent is not running: gpg starts it on first use"
+    fi
     local conf="${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf" ttl max
     ttl=$(awk '$1 == "default-cache-ttl" { v = $2 } END { print v }' "$conf" 2>/dev/null || true)
     max=$(awk '$1 == "max-cache-ttl" { v = $2 } END { print v }' "$conf" 2>/dev/null || true)
@@ -1052,7 +1105,7 @@ doctor_gpg() {
 
 doctor_ssh_agent() {
     d_section "ssh-agent"
-    local distro rc=0 sock="${SSH_AUTH_SOCK:-}"
+    local distro rc=0 sock="${SSH_AUTH_SOCK:-}" keys
     distro=$(distro_agent_socket)
     if [[ -f "$HOME/.config/systemd/user/ssh-agent.service" && -n "$distro" ]]; then
         d_warn "~/.config/systemd/user/ssh-agent.service hides the distro unit of the same name"
@@ -1071,10 +1124,21 @@ doctor_ssh_agent() {
         d_fail "No agent answers on $sock"
     elif (( rc == 1 )); then
         d_warn "The agent answers on $sock, but no key is loaded"
-        d_fix "ssh-add    (or: ssh-add ~/.ssh/<key registered on the PSMP>)"
+        keys=$(unloaded_ssh_keys)
+        if [[ -n "$keys" ]]; then
+            keys=${keys//$HOME/\~}
+            d_fix "ssh-add ${keys//$'\n'/ }    (at least the key registered on the PSMP)"
+        else
+            d_fix "ssh-add ~/.ssh/<key registered on the PSMP>"
+        fi
         return 0
     else
         d_ok "Agent on $sock, $(ssh-add -l 2>/dev/null | wc -l) key(s) loaded"
+        keys=$(unloaded_ssh_keys)
+        if [[ -n "$keys" ]]; then
+            keys=${keys//$HOME/\~}
+            d_info "Not loaded: ${keys//$'\n'/, } (fine unless it is the key registered on the PSMP)"
+        fi
         return 0
     fi
     if [[ -n "$distro" ]]; then
@@ -1127,11 +1191,60 @@ doctor_network() {
     fi
 }
 
-run_doctor() {
-    if (( $# > 0 )); then
-        err "Usage: psm doctor"
-        return 2
+# --deep: decrypts the master password (gpg-agent may ask for the passphrase)
+# and opens the database. The password goes from gpg to keepassxc-cli through
+# a pipe (kdbx_cmd) and is never stored or printed.
+doctor_deep() {
+    d_section "KeePassXC database (--deep)"
+    local entries n bytes rc=0
+    if [[ ! -f "$KDBX_PATH" || ! -f "$GPG_MASTER_FILE" ]] \
+       || ! command -v keepassxc-cli >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
+        d_info "Skipped: needs keepassxc-cli, gpg, the database and $GPG_MASTER_FILE"
+        return 0
     fi
+    # Decrypt once on its own: a gpg error is told apart from a wrong
+    # password, and the passphrase is then cached by gpg-agent
+    bytes=$(gpg -qd "$GPG_MASTER_FILE" 2>/dev/null | wc -c) || bytes=0
+    if (( bytes == 0 )); then
+        d_fail "Cannot decrypt $GPG_MASTER_FILE (passphrase refused, or pinentry cannot reach this terminal)"
+        d_fix "gpg -d $GPG_MASTER_FILE >/dev/null    (shows the gpg error)"
+        return 0
+    fi
+    if ! kdbx_cmd "" ls -q "$KDBX_PATH" >/dev/null 2>&1; then
+        d_fail "The password in $GPG_MASTER_FILE does not open $KDBX_PATH"
+        d_fix "move $GPG_MASTER_FILE away, then run psm setup    (stores the right one)"
+        return 0
+    fi
+    d_ok "Database opened with the password from $GPG_MASTER_FILE"
+    if ! entries=$(kdbx_cmd "" ls -q "$KDBX_PATH" "$KDBX_GROUP" 2>/dev/null); then
+        d_fail "Group $KDBX_GROUP not found in the database"
+        d_fix "psm setup    (offers to create it), or set KDBX_GROUP in the config"
+        return 0
+    fi
+    # An empty group is listed as "[empty]", translated: bracketed lines are not entries
+    n=$(grep -cv -e '^$' -e '^\[.*\]$' <<< "$entries" || true)
+    d_ok "Group $KDBX_GROUP: $n entries"
+    if grep -qxF -- "$VAULT_PASS_ENTRY" <<< "$entries"; then
+        d_ok "Vault password entry: $KDBX_GROUP/$VAULT_PASS_ENTRY"
+        return 0
+    fi
+    ssh-add -l >/dev/null 2>&1 || rc=$?
+    if (( rc == 0 )); then
+        d_info "No $KDBX_GROUP/$VAULT_PASS_ENTRY entry: fine while the vault accepts your SSH key"
+    else
+        d_fail "No SSH key loaded and no $KDBX_GROUP/$VAULT_PASS_ENTRY entry: nothing to log in to the vault with"
+        d_fix "ssh-add, or add the entry $KDBX_GROUP/$VAULT_PASS_ENTRY to the database"
+    fi
+}
+
+run_doctor() {
+    local deep=0
+    case "$*" in
+        "")     ;;
+        --deep) deep=1 ;;
+        *)      err "Usage: psm doctor [--deep]"
+                return 2 ;;
+    esac
     DOC_FAILS=0
     DOC_WARNS=0
     doctor_packages
@@ -1140,6 +1253,7 @@ run_doctor() {
     doctor_kdbx
     doctor_gpg
     doctor_ssh_agent
+    (( deep )) && doctor_deep
     doctor_bashrc
     doctor_network
     printf '\n'
