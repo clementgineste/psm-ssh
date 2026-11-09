@@ -267,6 +267,32 @@ if command -v git >/dev/null 2>&1; then
     unset -f g
 fi
 
+# --- setup: psm link, ~/.local/bin fallback ----------------------------------------
+self_psm="$WORK/clone-dir/psm"; mkdir -p "$WORK/clone-dir"; : > "$self_psm"
+sysbin="$WORK/sysbin"; mkdir -p "$sysbin"; chmod 555 "$sysbin"
+link_run() {   # link_run <answer to the sudo question: 0 yes, 1 no>
+    local yes_sudo="$1"
+    PATH="/usr/bin:/bin" bash -c '
+        source "$1" 2>/dev/null; set +e
+        PSM_SYSTEM_BIN="$4" T_SELF="$2" T_SUDO="$3"
+        C_RED="" C_GRN="" C_YLW="" C_CYN="" C_RST=""
+        psm_self() { printf "%s\n" "$T_SELF"; }
+        as_root()  { return 1; }                  # sudo refused
+        confirm()  { echo "ASKED: $1"; [[ "$1" != *"(sudo)"* ]] || return "$T_SUDO"; }
+        setup_link' _ "$HERE/../psm" "$self_psm" "$yes_sudo" "$sysbin" 2>&1
+}
+out=$(link_run 1)
+assert_eq "link: sudo declined → ~/.local/bin/psm" "$self_psm" "$(readlink "$HOME/.local/bin/psm")"
+assert_contains "link: warns that ~/.local/bin is not in PATH" "not in PATH" "$out"
+out=$(link_run 0)
+assert_contains "link: existing ~/.local/bin link is accepted" "[ OK ] $HOME/.local/bin/psm -> $self_psm" "$out"
+[[ "$out" != *ASKED* ]]; assert_eq "link: second run asks nothing" "0" "$?"
+rm -f "$HOME/.local/bin/psm"
+out=$(link_run 0)
+assert_eq "link: sudo fails → ~/.local/bin/psm" "$self_psm" "$(readlink "$HOME/.local/bin/psm")"
+rm -f "$HOME/.local/bin/psm"
+chmod 755 "$sysbin"
+
 # --- doctor --deep (stubbed gpg and keepassxc-cli) ----------------------------------
 GPG_MASTER_FILE="$WORK/master.gpg"; : > "$GPG_MASTER_FILE"
 KDBX_PATH="$WORK/db.kdbx";          : > "$KDBX_PATH"

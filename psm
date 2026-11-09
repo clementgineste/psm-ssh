@@ -696,6 +696,7 @@ run_scp() {
 # =============================================================================
 PSM_BASHRC_BEGIN='# >>> psm >>>'
 PSM_BASHRC_END='# <<< psm <<<'
+PSM_SYSTEM_BIN=/usr/local/bin   # where psm setup links psm first (sudo), before ~/.local/bin
 DOC_FAILS=0
 DOC_WARNS=0
 
@@ -988,7 +989,7 @@ doctor_install() {
     [[ -n "$found" ]] && real=$(readlink -f "$found")
     if [[ -z "$found" ]]; then
         d_fail "psm is not in PATH"
-        d_fix "sudo ln -s '$self' /usr/local/bin/psm    (or: $self setup)"
+        d_fix "$self setup    (or: sudo ln -s '$self' $PSM_SYSTEM_BIN/psm)"
     elif [[ "$real" == "$self" && -L "$found" ]]; then
         d_ok "$found -> $self"
     elif [[ "$real" == "$self" ]]; then
@@ -1333,12 +1334,32 @@ setup_packages() {
     d_ok "Packages installed"
 }
 
+# Fallback when the link in PSM_SYSTEM_BIN is declined or sudo fails:
+# ~/.local/bin, which Ubuntu's ~/.profile and Fedora's ~/.bashrc put in PATH
+setup_user_link() {
+    local self="$1" link="$HOME/.local/bin/psm"
+    if ! confirm "Create $link -> $self instead (no sudo)?"; then
+        warn "Skipped: add $(dirname "$self") to your PATH yourself"
+        return 0
+    fi
+    mkdir -p "$(dirname "$link")" && ln -sfn "$self" "$link" || return 0
+    d_ok "$link -> $self"
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) warn "~/.local/bin is not in PATH yet: open a new terminal (the login shell adds it when it exists)" ;;
+    esac
+}
+
 setup_link() {
     s_step "psm command"
-    local self link="/usr/local/bin/psm" current
+    local self link="$PSM_SYSTEM_BIN/psm" user_link="$HOME/.local/bin/psm" current
     self=$(psm_self)
-    if [[ "$self" == "$link" ]]; then
+    if [[ "$self" == "$link" || "$self" == "$user_link" ]]; then
         warn "This is the installed copy: run setup from the clone (./psm setup) to replace it with a link"
+        return 0
+    fi
+    if [[ -L "$user_link" && "$(readlink -f "$user_link")" == "$self" ]]; then
+        d_ok "$user_link -> $self"
         return 0
     fi
     current=$(readlink -f "$link" 2>/dev/null || true)
@@ -1353,14 +1374,20 @@ setup_link() {
         warn "$link is a copy: a git pull does not update it"
         confirm "Replace it with a link to $self?" || return 0
     elif ! confirm "Create the link $link -> $self (sudo)?"; then
-        warn "Skipped: add $(dirname "$self") to your PATH yourself"
+        setup_user_link "$self"
         return 0
     fi
     if [[ -w "$(dirname "$link")" ]]; then
         ln -sfn "$self" "$link"
     else
         as_root ln -sfn "$self" "$link"
-    fi && d_ok "$link -> $self"
+    fi
+    if [[ -L "$link" && "$(readlink -f "$link")" == "$self" ]]; then
+        d_ok "$link -> $self"
+    else
+        warn "Could not write $link"
+        setup_user_link "$self"
+    fi
 }
 
 setup_config() {
