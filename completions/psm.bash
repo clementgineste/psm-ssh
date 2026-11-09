@@ -15,12 +15,6 @@ _psm_complete() {
         return
     fi
 
-    # Flags
-    if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "-d -S -l -p -v -h" -- "$cur") )
-        return
-    fi
-
     # Index of the first non-flag argument (skips flags and the value of
     # -p/-v, grouped ones included: -dp 2222) → detects `cp` after flags.
     local i cmd_idx=0
@@ -32,8 +26,17 @@ _psm_complete() {
         esac
     done
 
-    # doctor and setup take no argument
+    # doctor takes --deep only; setup takes no argument
     if (( cmd_idx > 0 )) && [[ "${COMP_WORDS[cmd_idx]}" == @(doctor|setup) ]]; then
+        if [[ "${COMP_WORDS[cmd_idx]}" == doctor ]] && (( COMP_CWORD == cmd_idx + 1 )); then
+            COMPREPLY=( $(compgen -W "--deep" -- "$cur") )
+        fi
+        return
+    fi
+
+    # Flags
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W "-d -S -l -p -v -h" -- "$cur") )
         return
     fi
 
