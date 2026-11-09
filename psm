@@ -890,8 +890,10 @@ gpg_recipient_keyids() {
         | awk '/^:pubkey enc packet:/ { for (i = 1; i < NF; i++) if ($i == "keyid") print $(i + 1) }'
 }
 
+# grep without -q reads to the end: `| grep -q` would close the pipe early,
+# and pipefail would report the writer's SIGPIPE (141) instead of the match
 gpg_is_symmetric() {
-    LC_ALL=C gpg --batch --list-only --list-packets -- "$1" 2>/dev/null | grep -q '^:symkey enc packet:'
+    LC_ALL=C gpg --batch --list-only --list-packets -- "$1" 2>/dev/null | grep '^:symkey enc packet:' >/dev/null
 }
 
 # Ids of all the secret keys and subkeys

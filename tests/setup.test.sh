@@ -144,6 +144,13 @@ assert_eq "gpg: usable encryption keys (revoked and sign-only skipped)" \
     "$(gpg_encrypt_keys)"
 unset -f gpg
 
+# Symmetric file, with more packets written after the matching one (SIGPIPE case)
+gpg() { printf ':symkey enc packet: version 4, cipher 9, aead 0, s2k 3, hash 2\n'; sleep 0.2
+        printf ':encrypted data packet:\n'; }
+gpg_is_symmetric "$WORK/any.gpg"
+assert_eq "gpg: symmetric file detected, late output included" "0" "$?"
+unset -f gpg
+
 # --- doctor: ssh-agent ---------------------------------------------------------
 systemctl() { [[ "$*" == *"ssh-agent.socket"*"Listen"* ]] && printf '/run/user/1000/openssh_agent (Stream)\n'; return 0; }
 assert_eq "distro agent socket from systemd" "/run/user/1000/openssh_agent" "$(distro_agent_socket)"
