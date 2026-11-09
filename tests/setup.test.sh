@@ -342,6 +342,24 @@ unset -f gpg keepassxc-cli ssh-add
 run_doctor --bogus >/dev/null 2>&1
 assert_eq "doctor: unknown argument → rc 2" "2" "$?"
 
+# --- doctor: network, DNS that never answers AAAA queries --------------------------
+# `getent hosts` asks AAAA first and falls back to A only after the resolver
+# timeout (13 s seen behind a VPN); ssh resolves like `getent ahosts` (A and
+# AAAA in parallel). timeout runs an executable: the stub goes in PATH.
+mkdir -p "$STUBS/net"
+cat > "$STUBS/net/getent" <<'EOF'
+#!/bin/sh
+case "$1" in
+    hosts)  sleep 5; echo "10.0.0.1        $2" ;;   # slow AAAA, then A
+    ahosts) echo "10.0.0.1        STREAM $2" ;;
+    *)      exit 2 ;;
+esac
+EOF
+chmod +x "$STUBS/net/getent"
+out=$(PATH="$STUBS/net:$PATH" PSMP_HOST=psmp.test.example PORT=1 doctor_network)
+[[ "$out" != *"does not resolve"* ]]
+assert_eq "doctor network: resolves like ssh, not slowed by AAAA" "0" "$?"
+
 if (( fails )); then
     echo "== FAILED =="
     exit 1

@@ -1181,7 +1181,10 @@ doctor_network() {
         d_info "PSMP_HOST not set, skipped"
         return 0
     fi
-    if ! timeout 3 getent hosts "$PSMP_HOST" >/dev/null 2>&1; then
+    # ahosts resolves like ssh (getaddrinfo, A and AAAA in parallel). `hosts`
+    # asks AAAA first and waits for the resolver timeout before trying A when
+    # the DNS ignores AAAA queries (13 s seen behind a corporate VPN).
+    if ! timeout 3 getent ahosts "$PSMP_HOST" >/dev/null 2>&1; then
         d_warn "$PSMP_HOST does not resolve (VPN down? DNS?)"
         return 0
     fi
