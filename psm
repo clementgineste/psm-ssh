@@ -1204,10 +1204,12 @@ setup_packages() {
         return 1
     fi
     read -ra pkgs <<< "$missing"
+    # stdin from /dev/null: -y needs no input, and a package script must not
+    # read the answers meant for the next questions (sudo uses /dev/tty)
     if [[ "$pm" == apt ]]; then
-        as_root apt-get update -q && as_root apt-get install -y "${pkgs[@]}" || return 1
+        as_root apt-get update -q </dev/null && as_root apt-get install -y "${pkgs[@]}" </dev/null || return 1
     else
-        as_root dnf install -y "${pkgs[@]}" || return 1
+        as_root dnf install -y "${pkgs[@]}" </dev/null || return 1
     fi
     missing=$(missing_packages)
     if [[ -n "$missing" ]]; then
