@@ -25,6 +25,8 @@ agent answers.
 
 `psm doctor` checks everything without changing anything, and prints the
 command that fixes each problem. Run it first when something goes wrong.
+`psm doctor --deep` also opens the database with the password from
+`~/.psm-master.gpg` (it may ask for the GPG passphrase).
 
 The rest of this guide explains each step, for a manual install.
 
@@ -494,7 +496,8 @@ Expected output:
 ## 11. Troubleshooting
 
 Start with `psm doctor`: it checks the whole chain and prints a fix for
-each problem it finds.
+each problem it finds. When `psm` cannot read a password, `psm doctor --deep`
+tells a GPG problem from a wrong master password or a missing group.
 
 ### `ssh-add -l` → "Could not open a connection to your authentication agent"
 

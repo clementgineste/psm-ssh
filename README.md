@@ -134,6 +134,7 @@ mode, and asks before each change:
 
 1. Installs the missing packages with `apt-get` or `dnf` (sudo).
 2. Links `/usr/local/bin/psm` to the clone, so a `git pull` updates `psm`.
+   Without sudo, it offers `~/.local/bin/psm` instead.
 3. Creates `~/.config/psm/config` (PSMP, vault user, database, group, LDAP accounts).
 4. ssh-agent: enables the distro agent (`ssh-agent.socket`) when there is one,
    otherwise creates `psm-ssh-agent.service`, then offers to load your keys.
@@ -147,10 +148,17 @@ mode, and asks before each change:
 It ends with `psm doctor`. Running it again changes nothing.
 
 `psm doctor` checks the installation without changing anything: packages,
-link, config, database, master password file and its GPG key, `GPG_TTY`,
-ssh-agent, `~/.bashrc` block, and whether the PSMP answers. It prints one
-line per check, and the command that fixes each problem. Its exit code is 1
-when it finds a problem (`[FAIL]`), 0 otherwise.
+link, whether the clone is behind `origin`, config, database, master password
+file and its GPG key, gpg-agent and `GPG_TTY`, ssh-agent and the keys of
+`~/.ssh` it has not loaded, `~/.bashrc` block, and whether the PSMP answers.
+It prints one line per check, and the command that fixes each problem. Its
+exit code is 1 when it finds a problem (`[FAIL]`), 0 otherwise.
+
+`psm doctor --deep` also decrypts the master password and opens the database:
+it checks that the password in `~/.psm-master.gpg` is the right one, that the
+group exists, and that the vault password entry is there when no SSH key is
+loaded. It is the only check that may ask for the GPG passphrase, and it
+never prints a secret.
 
 For **WSL2**, [`docs/WSL2-SETUP.md`](docs/WSL2-SETUP.md) explains each step
 and how to do it by hand.
@@ -301,6 +309,7 @@ psm -v other.user admin@host      # override the vault user
 psm -l                            # list the targets in KeePassXC
 psm -h                            # help
 psm doctor                        # check the installation
+psm doctor --deep                 # ...and open the database
 psm setup                         # guided installation
 ```
 
